@@ -142,6 +142,25 @@ interface FollowerInfo {
   unit_value: number;
 }
 
+interface LivePickScore {
+  pickId: string;
+  sport: string;
+  game: string;
+  pick: string;
+  odds: string;
+  tier: string;
+  stake: number;
+  homeTeam: string;
+  awayTeam: string;
+  homeScore: number;
+  awayScore: number;
+  gameState: string;
+  period: number;
+  clock: string;
+  statusText: string;
+  onTrack: boolean | null;
+}
+
 /* ─── Constants ─── */
 
 const TIER_COLORS: Record<string, string> = {
@@ -196,6 +215,7 @@ export default function MethodPage() {
   const [follower, setFollower] = useState<FollowerInfo | null>(null);
   const [followerName, setFollowerName] = useState("");
   const [followerUnit, setFollowerUnit] = useState(5);
+  const [liveScores, setLiveScores] = useState<LivePickScore[]>([]);
 
   // Load saved unit value + follower
   useEffect(() => {
@@ -237,7 +257,8 @@ export default function MethodPage() {
       fetch("/api/method/weekly-summary").then((r) => r.json()).catch(() => ({ summary: null })),
       fetch("/api/method/sport-stats").then((r) => r.json()).catch(() => ({ sports: [] })),
       fetch("/api/method/followers").then((r) => r.json()).catch(() => ({ leaderboard: [] })),
-    ]).then(([monthlyData, statsData, picksData, statusData, exposureData, bankrollData, weeklyData, sportData, followerData]) => {
+      fetch("/api/live-scores").then((r) => r.json()).catch(() => ({ live: [] })),
+    ]).then(([monthlyData, statsData, picksData, statusData, exposureData, bankrollData, weeklyData, sportData, followerData, liveData]) => {
       setMonths(monthlyData.months ?? []);
 
       if (statsData) {
@@ -265,9 +286,21 @@ export default function MethodPage() {
       if (weeklyData.summary) setWeeklySummary(weeklyData.summary);
       setSportStats(sportData.sports ?? []);
       setLeaderboard(followerData.leaderboard ?? []);
+      setLiveScores(liveData.live ?? []);
 
       setLoading(false);
     });
+  }, []);
+
+  // Auto-refresh live scores every 60 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetch("/api/live-scores")
+        .then((r) => r.json())
+        .then((data) => setLiveScores(data.live ?? []))
+        .catch(() => {});
+    }, 60_000);
+    return () => clearInterval(interval);
   }, []);
 
   const dollarValue = (units: number) => `$${(units * unitValue).toFixed(2)}`;
@@ -336,6 +369,57 @@ export default function MethodPage() {
             and track your balance in real time. Every win, every loss &mdash; nothing hidden.
           </p>
         </div>
+
+        {/* ═══ LIVE NOW ═══ */}
+        {!loading && liveScores.length > 0 && (
+          <div className="mb-12">
+            <div className="flex items-center gap-3 mb-5">
+              <span className="relative flex h-3 w-3">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500" />
+              </span>
+              <h2 className="font-bold text-lg text-white">Live Now</h2>
+              <span className="text-xs text-slate-500">Auto-refreshes every 60s</span>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {liveScores.map((ls) => (
+                <div key={ls.pickId} className="p-5 rounded-2xl bg-gradient-to-br from-red-500/5 to-orange-500/5 border border-red-500/20">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs text-slate-500 font-semibold uppercase tracking-wider">
+                      {SPORT_EMOJIS[ls.sport] ?? "\u{1F3C5}"} {ls.sport}
+                    </span>
+                    <span className="text-xs font-mono text-orange-400">
+                      {ls.statusText}{ls.clock ? ` — ${ls.clock}` : ''}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-center gap-4 mb-3">
+                    <div className="text-right flex-1">
+                      <div className="text-sm font-semibold text-white truncate">{ls.homeTeam}</div>
+                    </div>
+                    <div className="text-center px-4 py-2 rounded-xl bg-white/[0.06] border border-white/[0.1]">
+                      <span className="text-2xl font-black text-white font-mono">{ls.homeScore}</span>
+                      <span className="text-lg text-slate-500 mx-2">-</span>
+                      <span className="text-2xl font-black text-white font-mono">{ls.awayScore}</span>
+                    </div>
+                    <div className="text-left flex-1">
+                      <div className="text-sm font-semibold text-white truncate">{ls.awayTeam}</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-slate-400">
+                      Pick: <span className="text-cyan-400 font-semibold">{ls.pick}</span> at {ls.odds}
+                    </span>
+                    {ls.onTrack !== null && (
+                      <span className={ls.onTrack ? "text-[#00ff88] font-bold" : "text-[#ff4466] font-bold"}>
+                        {ls.onTrack ? "on track ✅" : "behind ❌"}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* ═══ SYSTEM STATUS PANEL ═══ */}
         {!loading && (
