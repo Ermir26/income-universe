@@ -1,0 +1,33 @@
+appId: com.incomeuni.desktop
+productName: Income Universe
+directories:
+  output: dist
+  buildResources: public
+files:
+  - electron/**/*
+  - out/**/*
+  - public/**/*
+  - package.json
+mac:
+  category: public.app-category.finance
+  target:
+    - target: dmg
+      arch:
+        - universal
+  icon: public/icon.icns
+  darkModeSupport: true
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+dmg:
+  backgroundColor: "#010208"
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+  window:
+    width: 540
+    height: 380

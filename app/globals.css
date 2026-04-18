@@ -1,0 +1,179 @@
+@import "tailwindcss";
+
+:root {
+  --background: #010208;
+  --foreground: #e2e8f0;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Space theme scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0f172a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* Orbitron font for headers */
+@font-face {
+  font-family: "Orbitron";
+  src: url("https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap");
+}
+
+/* Twinkling animation for stars */
+@keyframes twinkle {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Glow pulse for active elements */
+@keyframes glow-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 5px rgba(34, 211, 238, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(34, 211, 238, 0.6);
+  }
+}
+
+/* Line clamp utility */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ═══ Sharkline Landing Animations ═══ */
+
+html {
+  scroll-behavior: smooth;
+}
+
+::selection {
+  background: rgba(6, 182, 212, 0.3);
+  color: #fff;
+}
+
+@keyframes float-slow {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-12px); }
+}
+
+@keyframes float-medium {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    opacity: 0.6;
+    box-shadow: 0 0 10px rgba(6, 182, 212, 0.2);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 30px rgba(6, 182, 212, 0.5);
+  }
+}
+
+@keyframes spin-very-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes gradient-x {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+@keyframes pulse-slow {
+  0%, 100% { opacity: 0.4; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(1.05); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes marquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+@keyframes draw-line {
+  from { stroke-dashoffset: var(--line-length, 2000); }
+  to { stroke-dashoffset: 0; }
+}
+
+.animate-float-slow { animation: float-slow 6s ease-in-out infinite; }
+.animate-float-medium { animation: float-medium 5s ease-in-out infinite; }
+.animate-pulse-glow { animation: pulse-glow 2s ease-in-out infinite; }
+.animate-spin-very-slow { animation: spin-very-slow 30s linear infinite; }
+.animate-gradient-shift { animation: gradient-shift 8s ease infinite; background-size: 200% 200%; }
+.animate-fade-in { animation: fade-in 0.6s ease-out both; }
+.animate-fade-in-up { animation: fade-in-up 0.6s ease-out both; }
+.animate-gradient-x { animation: gradient-x 6s ease infinite; }
+.animate-pulse-slow { animation: pulse-slow 6s ease-in-out infinite; }
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.05), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 3s infinite;
+}
+.animate-marquee { animation: marquee 30s linear infinite; }
+.animate-draw-line {
+  stroke-dasharray: var(--line-length, 2000);
+  stroke-dashoffset: var(--line-length, 2000);
+  animation: draw-line 2s ease-out forwards;
+}
+
+.animation-delay-200 { animation-delay: 200ms; }
+.animation-delay-400 { animation-delay: 400ms; }
+.animation-delay-600 { animation-delay: 600ms; }
+.animation-delay-1000 { animation-delay: 1s; }
+.animation-delay-2000 { animation-delay: 2s; }
+.animation-delay-4000 { animation-delay: 4s; }
