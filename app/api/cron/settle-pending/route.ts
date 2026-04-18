@@ -6,12 +6,14 @@ import { NextResponse } from 'next/server';
 import { revalidatePath } from 'next/cache';
 import { createClient } from '@supabase/supabase-js';
 import { fetchGameResult, type GameResult } from '@/lib/sports-data/fetch-game-result';
+import { getSystemStatus } from '@/lib/method/system-status';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
 const CRON_SECRET = process.env.CRON_SECRET ?? '';
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? '';
 const VIP_CHANNEL_ID = process.env.TELEGRAM_VIP_CHANNEL_ID ?? process.env.VIP_CHANNEL_ID ?? '';
+const FREE_CHANNEL_ID = process.env.TELEGRAM_CHANNEL_ID ?? '';
 
 const MAX_RETRIES = 6;
 const RETRY_INTERVAL_MINUTES = 15;
@@ -335,33 +337,72 @@ export async function GET(request: Request) {
     }
   }
 
-  // ── Post results to VIP Telegram ──
-  if (VIP_CHANNEL_ID) {
-    // Get running record for the message
-    const { data: allSettled } = await supabase.from('picks')
-      .select('result').not('result', 'in', '(pending,void,needs_manual_review)');
+  // ── Post result notifications to BOTH channels ──
+  if (settledPicks.length > 0) {
+    // Calculate current balance: 100 + SUM(all settled profit)
+    const { data: allProfits } = await supabase.from('picks')
+      .select('profit')
+      .in('result', ['won', 'lost', 'push']);
+    const currentBalance = 100 + (allProfits ?? []).reduce((s, p) => s + (parseFloat(p.profit) || 0), 0);
 
-    const totalW = allSettled?.filter((p) => p.result === 'won').length ?? 0;
-    const totalL = allSettled?.filter((p) => p.result === 'lost').length ?? 0;
-    const totalP = allSettled?.filter((p) => p.result === 'push').length ?? 0;
+    // Calculate current streak from most recent consecutive results
+    const { data: recentPicks } = await supabase.from('picks')
+      .select('result')
+      .in('result', ['won', 'lost'])
+      .order('sent_at', { ascending: false })
+      .limit(20);
+
+    let streakCount = 0;
+    let streakDir: 'win' | 'loss' | '' = '';
+    for (const rp of (recentPicks ?? [])) {
+      if (!streakDir) {
+        streakDir = rp.result === 'won' ? 'win' : 'loss';
+        streakCount = 1;
+      } else if ((streakDir === 'win' && rp.result === 'won') || (streakDir === 'loss' && rp.result === 'lost')) {
+        streakCount++;
+      } else {
+        break;
+      }
+    }
+
+    // Get system status for method status badge
+    const systemStatus = await getSystemStatus(supabase);
+    const hasPaused = systemStatus.some((s) => s.status === 'paused');
+    const hasCaution = systemStatus.some((s) => s.status === 'caution');
+    const methodBadge = hasPaused ? '🔴 Paused' : hasCaution ? '🟡 Caution' : '🟢 Active';
+
+    const channels = [VIP_CHANNEL_ID, FREE_CHANNEL_ID].filter(Boolean);
 
     for (const p of settledPicks) {
-      const icon = p.result === 'won' ? '✅' : p.result === 'lost' ? '❌' : '➖';
-      const label = p.result === 'won' ? 'WINNER' : p.result === 'lost' ? 'LOSS' : 'PUSH';
       const emoji = getSportEmoji(p.sport_key);
+      let msg: string;
 
-      await sendTelegram(
-        `${icon} <b>${label}</b>\n` +
-        `━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `${emoji} ${p.sport}\n` +
-        `${p.game}\n` +
-        `<b>${p.pick}</b> at ${p.odds} ${icon}\n` +
-        `Result: ${p.actual_result}\n` +
-        `━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `📊 Running: ${totalW}W-${totalL}L${totalP > 0 ? `-${totalP}P` : ''}\n` +
-        `🦈 Sharkline — sharkline.ai`,
-        VIP_CHANNEL_ID,
-      );
+      if (p.result === 'won') {
+        const streakLabel = streakDir === 'win' ? ` | Streak: W${streakCount}` : '';
+        msg =
+          `✅ <b>WON</b> — ${p.game}\n` +
+          `${emoji} ${p.pick} at ${p.odds}\n` +
+          `+${p.profit.toFixed(2)}u | Balance: ${currentBalance.toFixed(1)}u${streakLabel}\n` +
+          `🦈 #SharkMethod`;
+      } else if (p.result === 'lost') {
+        msg =
+          `❌ <b>LOST</b> — ${p.game}\n` +
+          `${emoji} ${p.pick} at ${p.odds}\n` +
+          `-${p.stake}u | Balance: ${currentBalance.toFixed(1)}u\n` +
+          `Method status: ${methodBadge}\n` +
+          `🦈 #SharkMethod`;
+      } else {
+        // push
+        msg =
+          `➖ <b>PUSH</b> — ${p.game}\n` +
+          `${emoji} ${p.pick} — No action, units returned.\n` +
+          `Balance: ${currentBalance.toFixed(1)}u\n` +
+          `🦈 #SharkMethod`;
+      }
+
+      for (const chatId of channels) {
+        await sendTelegram(msg, chatId);
+      }
     }
   }
 

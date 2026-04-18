@@ -169,6 +169,10 @@ export async function GET(request: Request) {
     // ── Get today's picks to prevent cross-run duplicates ──
     const todaysPicks = await getTodaysPicks(supabase);
 
+    // ── Calculate remaining exposure budget ──
+    const remainingUnits = +(MAX_DAILY_EXPOSURE - todayExposure).toFixed(1);
+    await log(supabase, 'exposure_budget', { todayExposure, remainingUnits, max: MAX_DAILY_EXPOSURE });
+
     // ── Generate picks ──
     const result: TipsterResult = await runTipster({
       oddsApiKey: process.env.ODDS_API_KEY ?? 'exhausted',
@@ -179,6 +183,7 @@ export async function GET(request: Request) {
       supabase,
       minHoursAhead: 24,
       maxPicks: MAX_PICKS_PER_DAY,
+      maxExposureUnits: remainingUnits,
       existingEventIds,
       todaysPicks,
       pausedSports,
@@ -208,6 +213,7 @@ export async function GET(request: Request) {
     // ── Log success ──
     const skippedLowConf = result.skippedLowConfidence ?? 0;
     const skippedDupes = result.skippedDuplicates ?? 0;
+    const skippedExposure = result.skippedExposure ?? 0;
 
     await log(supabase, 'generation_complete', {
       games_found: result.gamesFound,
@@ -215,7 +221,9 @@ export async function GET(request: Request) {
       picks_sent: result.picksSent,
       skipped_low_confidence: skippedLowConf,
       skipped_duplicates: skippedDupes,
+      skipped_exposure: skippedExposure,
       max_picks_cap: MAX_PICKS_PER_DAY,
+      exposure_budget: remainingUnits,
     });
 
     return NextResponse.json({
@@ -224,6 +232,7 @@ export async function GET(request: Request) {
       posted_vip: result.postedVip ?? 0,
       skipped_low_confidence: skippedLowConf,
       skipped_duplicates: skippedDupes,
+      skipped_exposure: skippedExposure,
       auto_paused: false,
       errors: [],
     });

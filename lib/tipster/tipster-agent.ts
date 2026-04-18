@@ -119,6 +119,7 @@ interface TipsterConfig {
   minHoursAhead?: number;
   paperMode?: boolean; // If true, log picks but don't send to Telegram
   maxPicks?: number; // Cap total picks per run (top N by confidence)
+  maxExposureUnits?: number; // Remaining exposure budget in units (6u cap minus already exposed)
   existingEventIds?: Set<string>; // Skip duplicates for these event IDs
   todaysPicks?: { game: string; pick: string }[]; // Already-posted picks today (cross-run dedup)
   pausedSports?: string[]; // Sports paused by system status (no picks)
@@ -132,6 +133,7 @@ export interface TipsterResult {
   cards: AnalysisCard[];
   skippedLowConfidence?: number;
   skippedDuplicates?: number;
+  skippedExposure?: number;
   postedFree?: number;
   postedVip?: number;
 }
@@ -314,7 +316,7 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
   const {
     oddsApiKey, anthropicApiKey, telegramBotToken, telegramChannelId,
     vipChannelId, supabase, sportKeys, minHoursAhead = 24, paperMode = false,
-    maxPicks, existingEventIds, todaysPicks, pausedSports = [], cautionSports = [],
+    maxPicks, maxExposureUnits, existingEventIds, todaysPicks, pausedSports = [], cautionSports = [],
   } = config;
 
   // Filter to active sports only
@@ -529,8 +531,30 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
     };
   }
 
-  // Replace validCards with the capped+deduped list for the rest of the function
-  const finalCards = capped;
+  // Exposure cap — trim picks so cumulative stakes stay within the remaining budget
+  let skippedExposure = 0;
+  let exposureBudgetUsed = 0;
+  const exposureCapped = maxExposureUnits != null
+    ? capped.filter((c) => {
+        if (exposureBudgetUsed + c.stake > maxExposureUnits) {
+          console.log(`   🛑 EXPOSURE CAP: ${c.game} — "${c.pick}" (${c.stake}u) would exceed ${maxExposureUnits}u remaining budget (${exposureBudgetUsed}u used)`);
+          skippedExposure++;
+          return false;
+        }
+        exposureBudgetUsed += c.stake;
+        return true;
+      })
+    : capped;
+
+  if (exposureCapped.length === 0) {
+    return {
+      gamesFound: games.length, cardsGenerated: 0, picksSent: 0, cards: [],
+      skippedDuplicates: skippedDuplicates + skippedCrossRunDupes, skippedLowConfidence, skippedExposure,
+    };
+  }
+
+  // Replace validCards with the final filtered list
+  const finalCards = exposureCapped;
 
   // Step 3: Blockchain-timestamp each card, then send to Telegram
   let picksSent = 0;
@@ -796,6 +820,7 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
     postedFree,
     skippedDuplicates: skippedDuplicates + skippedCrossRunDupes,
     skippedLowConfidence,
+    skippedExposure,
     cards: finalCards,
   };
 }
