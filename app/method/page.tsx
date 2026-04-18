@@ -106,6 +106,42 @@ interface WeeklySummary {
   bestPick: { game: string; pick: string; odds: string; profit: number } | null;
 }
 
+interface SportStat {
+  sport: string;
+  wins: number;
+  losses: number;
+  totalPicks: number;
+  winRate: number;
+  unitsProfit: number;
+  roi: number;
+  currentStreak: number;
+  streakType: "win" | "loss" | "none";
+  status: "active" | "caution" | "paused";
+  stakeMod: number;
+  recentPicks: Array<{
+    game: string; pick: string; odds: string; tier: string;
+    stake: number; result: string; profit: number; date: string;
+  }>;
+}
+
+interface LeaderboardEntry {
+  id: string;
+  displayName: string;
+  unitValue: number;
+  totalTracked: number;
+  followed: number;
+  followRate: number;
+  profit: number;
+  roi: number;
+  balance: number;
+}
+
+interface FollowerInfo {
+  id: string;
+  display_name: string;
+  unit_value: number;
+}
+
 /* ─── Constants ─── */
 
 const TIER_COLORS: Record<string, string> = {
@@ -154,14 +190,24 @@ export default function MethodPage() {
   const [whatIfBudget, setWhatIfBudget] = useState(500);
   const [whatIfDate, setWhatIfDate] = useState("");
   const [weeklySummary, setWeeklySummary] = useState<WeeklySummary | null>(null);
+  const [sportStats, setSportStats] = useState<SportStat[]>([]);
+  const [expandedSport, setExpandedSport] = useState<string | null>(null);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [follower, setFollower] = useState<FollowerInfo | null>(null);
+  const [followerName, setFollowerName] = useState("");
+  const [followerUnit, setFollowerUnit] = useState(5);
 
-  // Load saved unit value
+  // Load saved unit value + follower
   useEffect(() => {
     const saved = localStorage.getItem("shark-unit-value");
     if (saved) {
       const val = parseFloat(saved) || 5;
       setUnitValue(val);
       setBudget(val * 100);
+    }
+    const savedFollower = localStorage.getItem("shark-follower");
+    if (savedFollower) {
+      try { setFollower(JSON.parse(savedFollower)); } catch { /* ignore */ }
     }
   }, []);
 
@@ -189,7 +235,9 @@ export default function MethodPage() {
       fetch("/api/method/exposure").then((r) => r.json()).catch(() => null),
       fetch("/api/method/bankroll-history").then((r) => r.json()).catch(() => ({ history: [], summary: null })),
       fetch("/api/method/weekly-summary").then((r) => r.json()).catch(() => ({ summary: null })),
-    ]).then(([monthlyData, statsData, picksData, statusData, exposureData, bankrollData, weeklyData]) => {
+      fetch("/api/method/sport-stats").then((r) => r.json()).catch(() => ({ sports: [] })),
+      fetch("/api/method/followers").then((r) => r.json()).catch(() => ({ leaderboard: [] })),
+    ]).then(([monthlyData, statsData, picksData, statusData, exposureData, bankrollData, weeklyData, sportData, followerData]) => {
       setMonths(monthlyData.months ?? []);
 
       if (statsData) {
@@ -215,12 +263,37 @@ export default function MethodPage() {
       setBankrollHistory(bankrollData.history ?? []);
       if (bankrollData.summary) setBankrollSummary(bankrollData.summary);
       if (weeklyData.summary) setWeeklySummary(weeklyData.summary);
+      setSportStats(sportData.sports ?? []);
+      setLeaderboard(followerData.leaderboard ?? []);
 
       setLoading(false);
     });
   }, []);
 
   const dollarValue = (units: number) => `$${(units * unitValue).toFixed(2)}`;
+
+  async function registerFollower() {
+    if (!followerName.trim()) return;
+    const res = await fetch("/api/method/followers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ display_name: followerName.trim(), unit_value: followerUnit }),
+    });
+    const data = await res.json();
+    if (data.follower) {
+      setFollower(data.follower);
+      localStorage.setItem("shark-follower", JSON.stringify(data.follower));
+    }
+  }
+
+  async function toggleFollow(pickId: string, followed: boolean) {
+    if (!follower) return;
+    await fetch(`/api/method/followers/${follower.id}/picks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pick_id: pickId, followed }),
+    });
+  }
 
   // What If calculator
   const whatIfResult = useMemo(() => {
@@ -709,6 +782,70 @@ export default function MethodPage() {
           </div>
         )}
 
+        {/* ═══ SPORT ROI CARDS ═══ */}
+        {!loading && sportStats.length > 0 && (
+          <div className="mb-12">
+            <h2 className="font-bold text-lg text-white mb-5">By Sport</h2>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {sportStats.map((s) => (
+                <div key={s.sport} className="rounded-2xl bg-white/[0.02] border border-white/[0.06] overflow-hidden">
+                  <button
+                    onClick={() => setExpandedSport(expandedSport === s.sport ? null : s.sport)}
+                    className="w-full p-5 text-left hover:bg-white/[0.02] transition-colors"
+                  >
+                    <div className="flex items-center gap-3 mb-3">
+                      <span className="text-xl">{SPORT_EMOJIS[s.sport] ?? "\u{1F3C5}"}</span>
+                      <span className="font-bold text-white flex-1">{s.sport}</span>
+                      <StatusBadge status={s.status} />
+                    </div>
+                    <div className="grid grid-cols-3 gap-3 text-center">
+                      <div>
+                        <div className="text-lg font-black text-cyan-400">{s.winRate}%</div>
+                        <div className="text-[9px] text-slate-500 uppercase">Win Rate</div>
+                      </div>
+                      <div>
+                        <div className={`text-lg font-black ${s.unitsProfit >= 0 ? "text-[#00ff88]" : "text-[#ff4466]"}`}>
+                          {s.unitsProfit >= 0 ? "+" : ""}{s.unitsProfit.toFixed(1)}u
+                        </div>
+                        <div className="text-[9px] text-slate-500 uppercase">Profit</div>
+                      </div>
+                      <div>
+                        <div className={`text-lg font-black ${s.roi >= 0 ? "text-[#00ff88]" : "text-[#ff4466]"}`}>
+                          {s.roi >= 0 ? "+" : ""}{s.roi}%
+                        </div>
+                        <div className="text-[9px] text-slate-500 uppercase">ROI</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between mt-3 text-xs text-slate-400">
+                      <span>{s.wins}W-{s.losses}L ({s.totalPicks} picks)</span>
+                      <span className={`font-mono font-bold ${s.streakType === "win" ? "text-[#00ff88]" : s.streakType === "loss" ? "text-[#ff4466]" : "text-slate-500"}`}>
+                        {s.streakType === "none" ? "--" : `${s.streakType === "win" ? "W" : "L"}${s.currentStreak}`}
+                      </span>
+                    </div>
+                  </button>
+
+                  {expandedSport === s.sport && s.recentPicks.length > 0 && (
+                    <div className="border-t border-white/[0.06] px-4 py-3 space-y-1.5">
+                      <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-2">Recent Picks</div>
+                      {s.recentPicks.map((p, i) => (
+                        <div key={i} className="flex items-center gap-2 text-xs">
+                          <span className={`w-1.5 h-1.5 rounded-full ${p.result === "won" ? "bg-[#00ff88]" : p.result === "lost" ? "bg-[#ff4466]" : "bg-slate-500"}`} />
+                          <span className="text-slate-400 font-mono text-[10px] w-16">{p.date}</span>
+                          <span className="text-white font-semibold truncate flex-1">{p.pick}</span>
+                          <span className="text-slate-500 font-mono">{p.odds}</span>
+                          <span className={`font-bold font-mono ${p.profit >= 0 ? "text-[#00ff88]" : "text-[#ff4466]"}`}>
+                            {p.profit >= 0 ? "+" : ""}{p.profit.toFixed(2)}u
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* ═══ SECTION D: Monthly Balance Sheets ═══ */}
         {!loading && months.length > 0 && (
           <div className="mb-12">
@@ -740,6 +877,14 @@ export default function MethodPage() {
                         <span className={`font-bold text-xs ${m.roi >= 0 ? "text-[#00ff88]" : "text-[#ff4466]"}`}>
                           {m.roi >= 0 ? "+" : ""}{m.roi}%
                         </span>
+                        <a
+                          href={`/api/method/report/${m.month}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="px-2 py-1 rounded-lg bg-white/[0.06] text-[10px] font-bold text-slate-400 hover:bg-white/[0.1] hover:text-white transition-colors"
+                          title="Download PDF report"
+                        >
+                          PDF
+                        </a>
                         <svg
                           className={`w-4 h-4 text-slate-500 transition-transform ${isExpanded ? "rotate-180" : ""}`}
                           fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
@@ -900,6 +1045,117 @@ export default function MethodPage() {
                     </div>
                   );
                 })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ═══ TRACK YOUR RESULTS ═══ */}
+        {!loading && (
+          <div className="mb-12">
+            <h2 className="font-bold text-lg text-white mb-5">Track Your Results</h2>
+
+            {!follower ? (
+              <div className="p-6 sm:p-8 rounded-2xl bg-white/[0.03] border border-cyan-500/20">
+                <p className="text-sm text-slate-400 mb-6">Register to track which picks you follow and see your personal ROI.</p>
+                <div className="grid sm:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-xs text-slate-500 uppercase tracking-wider mb-2 font-semibold">Display Name</label>
+                    <input
+                      type="text"
+                      maxLength={30}
+                      value={followerName}
+                      onChange={(e) => setFollowerName(e.target.value)}
+                      placeholder="Your name"
+                      className="w-full px-4 py-3 rounded-xl bg-white/[0.06] border border-white/10 text-white placeholder:text-slate-600 focus:outline-none focus:border-cyan-500/50 transition-colors"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-500 uppercase tracking-wider mb-2 font-semibold">Unit Value ($)</label>
+                    <input
+                      type="number"
+                      min="0.01"
+                      step="0.5"
+                      value={followerUnit}
+                      onChange={(e) => setFollowerUnit(Math.max(0.01, parseFloat(e.target.value) || 0.01))}
+                      className="w-full px-4 py-3 rounded-xl bg-white/[0.06] border border-white/10 text-white focus:outline-none focus:border-cyan-500/50 transition-colors"
+                    />
+                  </div>
+                  <div className="flex items-end">
+                    <button
+                      onClick={registerFollower}
+                      disabled={!followerName.trim()}
+                      className="w-full px-6 py-3 rounded-xl bg-gradient-to-r from-cyan-600 to-indigo-600 text-white font-bold hover:shadow-lg hover:shadow-cyan-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                    >
+                      Start Tracking
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="p-6 rounded-2xl bg-white/[0.03] border border-cyan-500/20">
+                <div className="flex items-center gap-3 mb-4">
+                  <span className="text-cyan-400 font-bold">{follower.display_name}</span>
+                  <span className="text-xs text-slate-500">Unit: ${follower.unit_value}</span>
+                </div>
+
+                {todayPicks.length > 0 && (
+                  <div className="mb-4">
+                    <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-2 font-semibold">Today&apos;s Picks — Mark as followed</div>
+                    <div className="space-y-2">
+                      {todayPicks.map((p) => (
+                        <label key={p.id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-white/[0.03] border border-white/[0.04] cursor-pointer hover:bg-white/[0.05] transition-colors">
+                          <input
+                            type="checkbox"
+                            defaultChecked
+                            onChange={(e) => toggleFollow(p.id, e.target.checked)}
+                            className="w-4 h-4 rounded accent-cyan-500"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <span className="text-xs text-white font-semibold">{p.pick}</span>
+                            <span className="text-[10px] text-slate-500 ml-2">{p.game}</span>
+                          </div>
+                          <span className="text-xs font-mono text-slate-400">{p.stake}u</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Community Leaderboard */}
+            {leaderboard.length > 0 && (
+              <div className="mt-6">
+                <h3 className="text-sm text-slate-400 font-bold mb-3">Community Leaderboard</h3>
+                <div className="rounded-2xl bg-white/[0.02] border border-white/[0.06] overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-[10px] text-slate-500 uppercase tracking-wider border-b border-white/[0.06]">
+                          <th className="px-4 py-3 text-left font-semibold w-10">#</th>
+                          <th className="px-3 py-3 text-left font-semibold">Name</th>
+                          <th className="px-3 py-3 text-center font-semibold">Picks Followed</th>
+                          <th className="px-3 py-3 text-center font-semibold">Follow Rate</th>
+                          <th className="px-4 py-3 text-right font-semibold">ROI</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {leaderboard.map((entry, i) => (
+                          <tr key={entry.id} className={`border-t border-white/[0.04] ${follower?.id === entry.id ? "bg-cyan-500/5" : "hover:bg-white/[0.02]"} transition-colors`}>
+                            <td className="px-4 py-2.5 text-xs text-slate-500 font-bold">{i + 1}</td>
+                            <td className="px-3 py-2.5 text-xs text-white font-semibold">{entry.displayName}</td>
+                            <td className="px-3 py-2.5 text-center text-xs text-slate-400">{entry.followed}/{entry.totalTracked}</td>
+                            <td className="px-3 py-2.5 text-center text-xs text-cyan-400 font-bold">{entry.followRate}%</td>
+                            <td className={`px-4 py-2.5 text-right text-xs font-bold ${entry.roi >= 0 ? "text-[#00ff88]" : "text-[#ff4466]"}`}>
+                              {entry.roi >= 0 ? "+" : ""}{entry.roi}%
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               </div>
             )}
           </div>
