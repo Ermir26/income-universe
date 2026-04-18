@@ -406,12 +406,76 @@ export async function GET(request: Request) {
     }
   }
 
+  // ── Status change alerts (caution/recovery) ──
+  if (settledPicks.length > 0) {
+    // Get fresh system status AFTER settlement
+    const postStatus = await getSystemStatus(supabase);
+
+    // Calculate current balance for the messages
+    const { data: balProfits } = await supabase.from('picks')
+      .select('profit')
+      .in('result', ['won', 'lost', 'push']);
+    const balanceNow = 100 + (balProfits ?? []).reduce((s, p) => s + (parseFloat(p.profit) || 0), 0);
+
+    // Overall record
+    const { data: allRecord } = await supabase.from('picks')
+      .select('result')
+      .in('result', ['won', 'lost']);
+    const overallW = allRecord?.filter((r) => r.result === 'won').length ?? 0;
+    const overallL = allRecord?.filter((r) => r.result === 'lost').length ?? 0;
+
+    // Get the sports we just settled picks for
+    const settledSports = [...new Set(settledPicks.map((p) => p.sport))];
+    const channels = [VIP_CHANNEL_ID, FREE_CHANNEL_ID].filter(Boolean);
+
+    for (const sport of settledSports) {
+      const sportStatus = postStatus.find((s) => s.sport === sport);
+      if (!sportStatus) continue;
+
+      // Detect caution: sport has 3+ loss streak and status is caution
+      if (sportStatus.status === 'caution' && sportStatus.streakType === 'loss' && sportStatus.streak === 3) {
+        // Only fire when the streak JUST hit 3 (the settled pick caused it)
+        const cautionMsg =
+          `⚠️ <b>SYSTEM UPDATE</b> — ${sport} on Caution\n` +
+          `━━━━━━━━━━━━━━━━━━━━━━\n` +
+          `${sport} has hit ${sportStatus.streak} consecutive losses. Per Shark Method rules:\n` +
+          `→ Stakes reduced to 0.5 units until 2 consecutive wins\n` +
+          `→ Method status: 🟡 Caution\n\n` +
+          `Bankroll protection is why we have these rules.\n` +
+          `Balance: ${balanceNow.toFixed(1)}u | Overall record: ${overallW}W-${overallL}L\n` +
+          `🦈 #SharkMethod`;
+
+        for (const chatId of channels) {
+          await sendTelegram(cautionMsg, chatId);
+        }
+      }
+
+      // Detect recovery: sport is active and just had a win, AND the settled pick was a win
+      // Check if the sport just recovered (2 consecutive wins after being in caution)
+      if (sportStatus.status === 'active' && sportStatus.streakType === 'win' && sportStatus.streak === 2) {
+        // This sport just recovered from caution (hit 2 consecutive wins)
+        const recoveryMsg =
+          `✅ <b>SYSTEM UPDATE</b> — ${sport} back to Active\n` +
+          `━━━━━━━━━━━━━━━━━━━━━━\n` +
+          `${sport} has hit 2 consecutive wins. Stakes restored to normal.\n` +
+          `→ Method status: 🟢 Active\n\n` +
+          `Balance: ${balanceNow.toFixed(1)}u\n` +
+          `🦈 #SharkMethod`;
+
+        for (const chatId of channels) {
+          await sendTelegram(recoveryMsg, chatId);
+        }
+      }
+    }
+  }
+
   // ── Revalidate dashboard pages ──
   if (settled > 0) {
     try {
       revalidatePath('/');
       revalidatePath('/public');
       revalidatePath('/dashboard');
+      revalidatePath('/method');
     } catch {
       // revalidation is best-effort
     }

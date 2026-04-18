@@ -97,6 +97,15 @@ interface BankrollSummary {
   currentBalance: number;
 }
 
+interface WeeklySummary {
+  wins: number;
+  losses: number;
+  netUnits: number;
+  roi: number;
+  totalPicks: number;
+  bestPick: { game: string; pick: string; odds: string; profit: number } | null;
+}
+
 /* ─── Constants ─── */
 
 const TIER_COLORS: Record<string, string> = {
@@ -144,6 +153,7 @@ export default function MethodPage() {
   const [bankrollSummary, setBankrollSummary] = useState<BankrollSummary | null>(null);
   const [whatIfBudget, setWhatIfBudget] = useState(500);
   const [whatIfDate, setWhatIfDate] = useState("");
+  const [weeklySummary, setWeeklySummary] = useState<WeeklySummary | null>(null);
 
   // Load saved unit value
   useEffect(() => {
@@ -178,7 +188,8 @@ export default function MethodPage() {
       fetch("/api/method/status").then((r) => r.json()).catch(() => ({ sports: [] })),
       fetch("/api/method/exposure").then((r) => r.json()).catch(() => null),
       fetch("/api/method/bankroll-history").then((r) => r.json()).catch(() => ({ history: [], summary: null })),
-    ]).then(([monthlyData, statsData, picksData, statusData, exposureData, bankrollData]) => {
+      fetch("/api/method/weekly-summary").then((r) => r.json()).catch(() => ({ summary: null })),
+    ]).then(([monthlyData, statsData, picksData, statusData, exposureData, bankrollData, weeklyData]) => {
       setMonths(monthlyData.months ?? []);
 
       if (statsData) {
@@ -203,6 +214,7 @@ export default function MethodPage() {
       if (exposureData) setExposure(exposureData);
       setBankrollHistory(bankrollData.history ?? []);
       if (bankrollData.summary) setBankrollSummary(bankrollData.summary);
+      if (weeklyData.summary) setWeeklySummary(weeklyData.summary);
 
       setLoading(false);
     });
@@ -326,6 +338,43 @@ export default function MethodPage() {
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* ═══ THIS WEEK SUMMARY ═══ */}
+        {!loading && weeklySummary && (
+          <div className="mb-12 p-6 sm:p-8 rounded-2xl bg-gradient-to-br from-cyan-500/5 to-blue-500/5 border border-cyan-500/20">
+            <h2 className="font-bold text-lg text-white mb-4">This Week</h2>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
+              <div className="text-center">
+                <div className="text-2xl font-black text-white">{weeklySummary.wins}W-{weeklySummary.losses}L</div>
+                <div className="text-[10px] text-slate-500 uppercase tracking-wider mt-1">Record</div>
+              </div>
+              <div className="text-center">
+                <div className={`text-2xl font-black ${weeklySummary.netUnits >= 0 ? "text-[#00ff88]" : "text-[#ff4466]"}`}>
+                  {weeklySummary.netUnits >= 0 ? "+" : ""}{weeklySummary.netUnits.toFixed(1)}u
+                </div>
+                <div className="text-[10px] text-slate-500 uppercase tracking-wider mt-1">Net Units</div>
+              </div>
+              <div className="text-center">
+                <div className={`text-2xl font-black ${weeklySummary.roi >= 0 ? "text-[#00ff88]" : "text-[#ff4466]"}`}>
+                  {weeklySummary.roi >= 0 ? "+" : ""}{weeklySummary.roi}%
+                </div>
+                <div className="text-[10px] text-slate-500 uppercase tracking-wider mt-1">ROI</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-black text-white">{weeklySummary.totalPicks}</div>
+                <div className="text-[10px] text-slate-500 uppercase tracking-wider mt-1">Picks</div>
+              </div>
+            </div>
+            {weeklySummary.bestPick && (
+              <div className="px-4 py-3 rounded-xl bg-white/[0.04] border border-white/[0.06]">
+                <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Pick of the Week</div>
+                <div className="text-sm text-white font-semibold truncate">{weeklySummary.bestPick.pick} at {weeklySummary.bestPick.odds}</div>
+                <div className="text-xs text-slate-400 truncate">{weeklySummary.bestPick.game}</div>
+                <div className="text-xs text-[#00ff88] font-bold mt-1">+{weeklySummary.bestPick.profit.toFixed(1)}u</div>
+              </div>
+            )}
           </div>
         )}
 
