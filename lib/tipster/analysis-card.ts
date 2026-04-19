@@ -351,8 +351,8 @@ AVOID:
 // ─── Multi-Candidate Generation (Change 1) ───
 
 /**
- * Generate 8 candidate picks across multiple games, then filter to the best ones.
- * This is the core improvement: wide net, tight filter.
+ * Generate 10 candidate picks across multiple games, then filter to the best ones.
+ * Wide net, tight filter. Falls back to top 2 if zero pass threshold.
  */
 export async function generateCandidates(
   games: GameData[],
@@ -425,7 +425,7 @@ Here are the games to analyze:
 
 ${gamesBlock}
 
-Generate 8 candidate picks across these games. Be honest about confidence — only rate above 75 if you have strong analytical basis. We will filter down to the best 2-3, so include a range of confidence levels.
+Generate 10 candidate picks across these games. Rate honestly — a 60-65 confidence pick with strong data backing is still worth publishing. We will filter down to the best 2-3, so include a range of confidence levels.
 
 You must also rate each scoring factor from 0-100 based on your analysis.
 
@@ -462,8 +462,8 @@ RULES:
 - market_movement: line moving in pick's direction (70+ = sharp money agrees)
 - public_vs_sharp: contrarian value, sharps on our side (70+ = fading public)
 - situational: rest, travel, injuries, motivation (70+ = strong situational edge)
-- Be honest with ratings. Don't inflate. A realistic range is 50-80 for most factors.
-- confidence: your overall confidence (0-100). Be calibrated — most picks should be 60-78.`,
+- Be honest with ratings. Don't inflate. A realistic range is 55-80 for most factors.
+- confidence: your overall confidence (0-100). Most picks should be 58-78. A 60-65 pick with solid data is publishable.`,
       },
     ],
   });
@@ -484,41 +484,85 @@ RULES:
 
   if (!Array.isArray(candidates)) return [];
 
-  // ── Filter candidates (Change 1) ──
+  // ── Filter candidates ──
 
   const gameMap = new Map(selectedGames.map((g) => [`${g.home_team} vs ${g.away_team}`, g]));
 
   const cards: AnalysisCard[] = [];
 
+  // First pass: build all scoreable candidates (even below threshold)
+  interface ScoredCandidate {
+    cand: ClaudeCandidate;
+    game: GameData;
+    scoring: ScoringResult;
+    effectivePickType: PickType;
+    tier: Tier | null;
+    passedFilter: boolean;
+    filterReason?: string;
+  }
+
+  const allScored: ScoredCandidate[] = [];
+
   for (const cand of candidates) {
-    // a. Reject confidence < 65
-    if (cand.confidence < 65) {
-      console.log(`   ⏭️ FILTERED (low confidence ${cand.confidence}): ${cand.game} — ${cand.pick}`);
-      continue;
-    }
-
-    // b. Reject odds worse than +200
-    const oddsNum = parseInt(cand.odds, 10);
-    if (!isNaN(oddsNum) && oddsNum > 200) {
-      console.log(`   ⏭️ FILTERED (odds too risky ${cand.odds}): ${cand.game} — ${cand.pick}`);
-      continue;
-    }
-
-    // Match to game data
     const game = gameMap.get(cand.game);
     if (!game) {
       console.log(`   ⏭️ FILTERED (no game match): ${cand.game}`);
       continue;
     }
 
-    // Score through engine
     const scoring = calculateConfidence(cand.factors, weights);
     const effectivePickType: PickType = cand.pickType === "foundation" ? "foundation" : "value";
     const tier = getTier(scoring.confidence, effectivePickType);
-    if (!tier) {
-      console.log(`   ⏭️ FILTERED (below tier threshold ${scoring.confidence}): ${cand.game} — ${cand.pick}`);
-      continue;
+
+    let passedFilter = true;
+    let filterReason: string | undefined;
+
+    // a. Reject confidence < 60
+    if (cand.confidence < 60) {
+      passedFilter = false;
+      filterReason = `low confidence ${cand.confidence}`;
     }
+
+    // b. Reject odds worse than +200
+    const oddsNum = parseInt(cand.odds, 10);
+    if (!isNaN(oddsNum) && oddsNum > 200) {
+      passedFilter = false;
+      filterReason = `odds too risky ${cand.odds}`;
+    }
+
+    // c. Reject if scoring engine puts it below tier threshold
+    if (!tier) {
+      passedFilter = false;
+      filterReason = `below tier threshold ${scoring.confidence}`;
+    }
+
+    if (!passedFilter) {
+      console.log(`   ⏭️ FILTERED (${filterReason}): ${cand.game} — ${cand.pick}`);
+    }
+
+    allScored.push({ cand, game, scoring, effectivePickType, tier, passedFilter, filterReason });
+  }
+
+  // Determine which candidates to use
+  let selectedCandidates = allScored.filter((s) => s.passedFilter);
+
+  // Zero-pick fallback: if nothing passed, take top 2 by confidence regardless
+  if (selectedCandidates.length === 0 && allScored.length > 0) {
+    console.log(`   ⚠️ ZERO-PICK FALLBACK: No candidates passed filter. Taking top 2 by confidence.`);
+    const sorted = [...allScored].sort((a, b) => b.scoring.confidence - a.scoring.confidence);
+    selectedCandidates = sorted.slice(0, 2).map((s) => {
+      // Force a VALUE tier for fallback picks
+      const fallbackTier = s.tier ?? { name: "VALUE" as const, emoji: "✅", stake: 1, color: "#22c55e" };
+      return { ...s, tier: fallbackTier, passedFilter: true, filterReason: 'LOW_CONFIDENCE_FALLBACK' };
+    });
+    // Log as low confidence in agent logs (but don't change user-facing tier)
+    for (const s of selectedCandidates) {
+      console.log(`   ⚠️ LOW CONFIDENCE FALLBACK: ${s.cand.game} — ${s.cand.pick} (conf: ${s.scoring.confidence})`);
+    }
+  }
+
+  for (const { cand, game, scoring, effectivePickType, tier } of selectedCandidates) {
+    if (!tier) continue;
 
     // Build stats line
     const statParts: string[] = [];

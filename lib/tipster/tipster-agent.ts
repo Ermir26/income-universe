@@ -360,11 +360,11 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
   }
 
   // Step 2: Generate candidates using multi-game batch analysis
-  // Generate 8 candidates per batch, filter to top picks (generate more, publish less).
-  // Split into foundation (heavy favorites) and value (edge-based) picks.
+  // Generate 10 candidates per batch, filter to top picks (generate more, publish less).
+  // Foundation picks are always attempted separately (at least 1).
   const effectiveMax = maxPicks ?? 5;
-  const foundationCount = Math.max(1, Math.floor(effectiveMax / 2));
-  const valueCount = effectiveMax - foundationCount;
+  const foundationTarget = Math.max(1, Math.floor(effectiveMax / 3)); // always at least 1
+  const valueTarget = effectiveMax - foundationTarget;
 
   const cards: AnalysisCard[] = [];
   const weights = await loadWeights(supabase, games[0]?.sport_key);
@@ -372,22 +372,22 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
   // Shuffle games so foundation and value get different games when possible
   const shuffled = [...games].sort(() => Math.random() - 0.5);
 
-  // Generate foundation candidates (8 candidates → take top foundationCount)
+  // Always try foundation picks first (separate run — guaranteed attempt)
   const foundationGames = shuffled.slice(0, Math.min(shuffled.length, 6));
-  console.log(`   🛡️ Generating foundation candidates from ${foundationGames.length} games...`);
+  console.log(`   🛡️ Generating foundation candidates from ${foundationGames.length} games (target: ${foundationTarget})...`);
   try {
     const foundationCandidates = await generateCandidates(
       foundationGames, anthropicApiKey, weights, "foundation", supabase, todaysPicks,
     );
-    console.log(`   🛡️ Got ${foundationCandidates.length} foundation candidates, taking top ${foundationCount}`);
-    cards.push(...foundationCandidates.slice(0, foundationCount));
+    console.log(`   🛡️ Got ${foundationCandidates.length} foundation candidates, taking top ${foundationTarget}`);
+    cards.push(...foundationCandidates.slice(0, foundationTarget));
   } catch (err) {
     console.log(`   Foundation generation failed: ${(err as Error).message}`);
   }
 
-  // Generate value candidates (8 candidates → take top valueCount)
+  // Generate value candidates (separate run)
   const valueGames = shuffled.slice(0, Math.min(shuffled.length, 6));
-  console.log(`   💎 Generating value candidates from ${valueGames.length} games...`);
+  console.log(`   💎 Generating value candidates from ${valueGames.length} games (target: ${valueTarget})...`);
   try {
     const valueCandidates = await generateCandidates(
       valueGames, anthropicApiKey, weights, "value", supabase, todaysPicks,
@@ -395,8 +395,8 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
     // Avoid duplicate games already picked by foundation
     const usedGameIds = new Set(cards.map((c) => c.game_id));
     const deduped = valueCandidates.filter((c) => !usedGameIds.has(c.game_id));
-    console.log(`   💎 Got ${valueCandidates.length} value candidates (${deduped.length} after dedup), taking top ${valueCount}`);
-    cards.push(...deduped.slice(0, valueCount));
+    console.log(`   💎 Got ${valueCandidates.length} value candidates (${deduped.length} after dedup), taking top ${valueTarget}`);
+    cards.push(...deduped.slice(0, valueTarget));
   } catch (err) {
     console.log(`   Value generation failed: ${(err as Error).message}`);
   }
