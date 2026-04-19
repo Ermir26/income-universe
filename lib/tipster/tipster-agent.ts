@@ -383,6 +383,11 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
     cards.push(...foundationCandidates.slice(0, foundationTarget));
   } catch (err) {
     console.log(`   Foundation generation failed: ${(err as Error).message}`);
+    supabase.from('agent_logs').insert({
+      agent_name: 'sharp-picks', action: 'foundation_error',
+      result: JSON.stringify({ error: (err as Error).message, gamesCount: foundationGames.length }),
+      revenue_generated: 0,
+    }).then(() => {}, () => {});
   }
 
   // Generate value candidates (separate run)
@@ -399,6 +404,11 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
     cards.push(...deduped.slice(0, valueTarget));
   } catch (err) {
     console.log(`   Value generation failed: ${(err as Error).message}`);
+    supabase.from('agent_logs').insert({
+      agent_name: 'sharp-picks', action: 'value_error',
+      result: JSON.stringify({ error: (err as Error).message, gamesCount: valueGames.length }),
+      revenue_generated: 0,
+    }).then(() => {}, () => {});
   }
 
   console.log(`   Generated ${cards.length} qualifying cards (confidence >= ${MIN_CONFIDENCE})`);

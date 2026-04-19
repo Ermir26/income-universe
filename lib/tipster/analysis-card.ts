@@ -469,24 +469,63 @@ RULES:
   });
 
   const textBlock = response.content.find((b) => b.type === "text");
-  if (!textBlock || textBlock.type !== "text") return [];
+  if (!textBlock || textBlock.type !== "text") {
+    console.log(`   ⚠️ Claude returned no text block for ${pickTypeHint} candidates`);
+    await supabase.from('agent_logs').insert({
+      agent_name: 'sharp-picks', action: 'claude_no_text',
+      result: JSON.stringify({ pickType: pickTypeHint, gamesCount: selectedGames.length }),
+      revenue_generated: 0,
+    }).then(() => {}, () => {});
+    return [];
+  }
 
   const jsonStr = textBlock.text.trim();
   const jsonMatch = jsonStr.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) return [];
+  if (!jsonMatch) {
+    console.log(`   ⚠️ Claude response not valid JSON array for ${pickTypeHint}: ${jsonStr.slice(0, 200)}`);
+    await supabase.from('agent_logs').insert({
+      agent_name: 'sharp-picks', action: 'claude_bad_json',
+      result: JSON.stringify({ pickType: pickTypeHint, preview: jsonStr.slice(0, 500) }),
+      revenue_generated: 0,
+    }).then(() => {}, () => {});
+    return [];
+  }
 
   let candidates: ClaudeCandidate[];
   try {
     candidates = JSON.parse(jsonMatch[0]);
-  } catch {
+  } catch (parseErr) {
+    console.log(`   ⚠️ JSON parse failed for ${pickTypeHint}: ${(parseErr as Error).message}`);
     return [];
   }
 
   if (!Array.isArray(candidates)) return [];
 
+  console.log(`   📊 Claude returned ${candidates.length} ${pickTypeHint} candidates`);
+
   // ── Filter candidates ──
 
-  const gameMap = new Map(selectedGames.map((g) => [`${g.home_team} vs ${g.away_team}`, g]));
+  // Fuzzy game matching — Claude might return names in different order or format
+  function matchGame(candGame: string): GameData | undefined {
+    // Exact match first
+    const exact = selectedGames.find((g) => `${g.home_team} vs ${g.away_team}` === candGame);
+    if (exact) return exact;
+    // Reversed match
+    const reversed = selectedGames.find((g) => `${g.away_team} vs ${g.home_team}` === candGame);
+    if (reversed) return reversed;
+    // Fuzzy: check if both team names appear somewhere in the candidate string
+    const candLower = candGame.toLowerCase();
+    return selectedGames.find((g) => {
+      const home = g.home_team.toLowerCase();
+      const away = g.away_team.toLowerCase();
+      // Check if significant words from both teams appear
+      const homeWords = home.split(/\s+/).filter((w) => w.length > 3);
+      const awayWords = away.split(/\s+/).filter((w) => w.length > 3);
+      const homeMatch = homeWords.some((w) => candLower.includes(w));
+      const awayMatch = awayWords.some((w) => candLower.includes(w));
+      return homeMatch && awayMatch;
+    });
+  }
 
   const cards: AnalysisCard[] = [];
 
@@ -504,7 +543,7 @@ RULES:
   const allScored: ScoredCandidate[] = [];
 
   for (const cand of candidates) {
-    const game = gameMap.get(cand.game);
+    const game = matchGame(cand.game);
     if (!game) {
       console.log(`   ⏭️ FILTERED (no game match): ${cand.game}`);
       continue;
