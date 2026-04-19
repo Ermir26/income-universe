@@ -4,7 +4,7 @@
 import { type SupabaseClient } from "@supabase/supabase-js";
 import { getTier, MIN_CONFIDENCE } from "./tiers";
 import { calculateConfidence, loadWeights, type ScoringWeights } from "./scoring-engine";
-import { generateAnalysisCard, formatWinnerMessage, type AnalysisCard, type GameData } from "./analysis-card";
+import { generateCandidates, generateAnalysisCard, formatWinnerMessage, type AnalysisCard, type GameData } from "./analysis-card";
 import { recordBet } from "./bankroll";
 import { hashPick, timestampOnChain, getPolygonScanUrl } from "./blockchain";
 import { enforceSportSafety } from "./safety";
@@ -359,59 +359,46 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
     return { gamesFound: 0, cardsGenerated: 0, picksSent: 0, cards: [] };
   }
 
-  // Step 2: Load weights and generate analysis cards
-  // Split into foundation (high-probability, short odds) and value (edge-based) picks.
-  // Roughly half and half: e.g. 4 picks → 2 foundation + 2 value, 3 picks → 1-2 + 1-2.
-  const effectiveMax = maxPicks ?? games.length;
-  const foundationCount = Math.floor(effectiveMax / 2);
+  // Step 2: Generate candidates using multi-game batch analysis
+  // Generate 8 candidates per batch, filter to top picks (generate more, publish less).
+  // Split into foundation (heavy favorites) and value (edge-based) picks.
+  const effectiveMax = maxPicks ?? 5;
+  const foundationCount = Math.max(1, Math.floor(effectiveMax / 2));
   const valueCount = effectiveMax - foundationCount;
 
   const cards: AnalysisCard[] = [];
-  const batchSize = 3; // limit concurrency for API rate limits
+  const weights = await loadWeights(supabase, games[0]?.sport_key);
 
   // Shuffle games so foundation and value get different games when possible
   const shuffled = [...games].sort(() => Math.random() - 0.5);
-  const foundationGames = shuffled.slice(0, Math.min(shuffled.length, foundationCount * 2));
-  const valueGames = shuffled.slice(0, Math.min(shuffled.length, valueCount * 2));
 
-  // Generate foundation picks
-  console.log(`   🔒 Generating up to ${foundationCount} foundation picks...`);
-  for (let i = 0; i < foundationGames.length && cards.filter(c => c.pickType === "foundation").length < foundationCount; i += batchSize) {
-    const batch = foundationGames.slice(i, i + batchSize);
-    const batchResults = await Promise.allSettled(
-      batch.map(async (game) => {
-        const weights = await loadWeights(supabase, game.sport_key);
-        console.log(`   🔒 Analyzing (foundation): ${game.home_team} vs ${game.away_team}`);
-        return generateAnalysisCard(game, anthropicApiKey, weights, "foundation", todaysPicks);
-      }),
+  // Generate foundation candidates (8 candidates → take top foundationCount)
+  const foundationGames = shuffled.slice(0, Math.min(shuffled.length, 6));
+  console.log(`   🛡️ Generating foundation candidates from ${foundationGames.length} games...`);
+  try {
+    const foundationCandidates = await generateCandidates(
+      foundationGames, anthropicApiKey, weights, "foundation", supabase, todaysPicks,
     );
-    for (const result of batchResults) {
-      if (result.status === "fulfilled" && result.value) {
-        cards.push(result.value);
-      } else if (result.status === "rejected") {
-        console.log(`   Analysis failed: ${result.reason?.message ?? result.reason}`);
-      }
-    }
+    console.log(`   🛡️ Got ${foundationCandidates.length} foundation candidates, taking top ${foundationCount}`);
+    cards.push(...foundationCandidates.slice(0, foundationCount));
+  } catch (err) {
+    console.log(`   Foundation generation failed: ${(err as Error).message}`);
   }
 
-  // Generate value picks
-  console.log(`   💎 Generating up to ${valueCount} value picks...`);
-  for (let i = 0; i < valueGames.length && cards.filter(c => c.pickType === "value").length < valueCount; i += batchSize) {
-    const batch = valueGames.slice(i, i + batchSize);
-    const batchResults = await Promise.allSettled(
-      batch.map(async (game) => {
-        const weights = await loadWeights(supabase, game.sport_key);
-        console.log(`   💎 Analyzing (value): ${game.home_team} vs ${game.away_team}`);
-        return generateAnalysisCard(game, anthropicApiKey, weights, "value", todaysPicks);
-      }),
+  // Generate value candidates (8 candidates → take top valueCount)
+  const valueGames = shuffled.slice(0, Math.min(shuffled.length, 6));
+  console.log(`   💎 Generating value candidates from ${valueGames.length} games...`);
+  try {
+    const valueCandidates = await generateCandidates(
+      valueGames, anthropicApiKey, weights, "value", supabase, todaysPicks,
     );
-    for (const result of batchResults) {
-      if (result.status === "fulfilled" && result.value) {
-        cards.push(result.value);
-      } else if (result.status === "rejected") {
-        console.log(`   Analysis failed: ${result.reason?.message ?? result.reason}`);
-      }
-    }
+    // Avoid duplicate games already picked by foundation
+    const usedGameIds = new Set(cards.map((c) => c.game_id));
+    const deduped = valueCandidates.filter((c) => !usedGameIds.has(c.game_id));
+    console.log(`   💎 Got ${valueCandidates.length} value candidates (${deduped.length} after dedup), taking top ${valueCount}`);
+    cards.push(...deduped.slice(0, valueCount));
+  } catch (err) {
+    console.log(`   Value generation failed: ${(err as Error).message}`);
   }
 
   console.log(`   Generated ${cards.length} qualifying cards (confidence >= ${MIN_CONFIDENCE})`);
@@ -636,10 +623,17 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
     return paperMode || paperSportKeys.includes(card.sport_key);
   }
 
-  // Pre-determine which card will also go to the free channel,
-  // so the VIP insert can mark it channel: "both" instead of "vip".
+  // Pre-determine which cards will also go to the free channel:
+  // Foundation picks + one VALUE pick go to both channels.
   const preLiveCards = finalCards.filter((c) => !isPaperSport(c));
-  const freeCardGameId = (preLiveCards.find((c) => c.tier.name === "VALUE") ?? preLiveCards[preLiveCards.length - 1])?.game_id;
+  const freeCardGameIds = new Set<string>();
+  // All FOUNDATION picks go to free channel
+  for (const c of preLiveCards) {
+    if (c.tier.name === "FOUNDATION") freeCardGameIds.add(c.game_id);
+  }
+  // Plus one VALUE pick (the teaser)
+  const valueTeaser = preLiveCards.find((c) => c.tier.name === "VALUE") ?? preLiveCards.find((c) => c.tier.name !== "FOUNDATION");
+  if (valueTeaser) freeCardGameIds.add(valueTeaser.game_id);
 
   // VIP channel gets all cards
   if (vipChannelId) {
@@ -695,7 +689,7 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
           category: card.tier.name,
           reasoning: card.analysis,
           telegram_message_id: msgId,
-          channel: card.game_id === freeCardGameId ? "both" : "vip",
+          channel: freeCardGameIds.has(card.game_id) ? "both" : "vip",
           status: "pending",
           sent_at: new Date().toISOString(),
           game_time: card.game_time,
@@ -722,11 +716,26 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
     }
   }
 
-  // Free channel: send best VALUE pick only (skip paper sports)
+  // Free channel: send ALL foundation picks (full card) + one VALUE pick (stripped)
   const liveCards = finalCards.filter((c) => !isPaperSport(c));
-  const freeCard = liveCards.find((c) => c.tier.name === "VALUE") ?? liveCards[liveCards.length - 1];
+
+  // Send foundation picks to free channel (full format — they're the hook)
+  const foundationCards = liveCards.filter((c) => c.tier.name === "FOUNDATION");
+  for (const card of foundationCards) {
+    try {
+      const chain = await blockchainTimestamp(card);
+      const html = appendChainBadge(card.telegram_html, chain, card.game_time);
+      const msgId = await sendTelegramHtml(html, telegramBotToken, telegramChannelId);
+      console.log(`   📤 FREE (FOUNDATION): 🛡️ ${card.sport} ${card.game} → msg:${msgId}`);
+      postedFree++;
+    } catch (err) {
+      console.log(`   FREE foundation send failed: ${(err as Error).message}`);
+    }
+  }
+
+  // Send one VALUE pick to free channel (stripped format)
+  const freeCard = liveCards.find((c) => c.tier.name === "VALUE") ?? liveCards.find((c) => c.tier.name !== "FOUNDATION");
   if (freeCard) {
-    // Blockchain timestamp the free pick too
     const freeChain = await blockchainTimestamp(freeCard);
     const freeHtml = appendChainBadge(buildFreeCardHtml(freeCard, finalCards.length), freeChain, freeCard.game_time);
     try {
@@ -734,36 +743,19 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
       console.log(`   📤 FREE: ${freeCard.tier.emoji} ${freeCard.sport} ${freeCard.game} → msg:${msgId}`);
       postedFree++;
 
-      // Log free pick
+      // Log free pick if no VIP channel
       if (!vipChannelId) {
-        // If no VIP channel, this is the only record
         const { data: row } = await supabase.from("picks").insert({
-          sport: freeCard.sport,
-          sport_key: freeCard.sport_key,
-          league: freeCard.league,
-          game: freeCard.game,
-          pick: freeCard.pick,
-          odds: freeCard.odds,
-          bookmaker: freeCard.bookmaker,
-          pick_type: freeCard.pickType,
-          confidence: freeCard.confidence,
-          tier: freeCard.tier.name,
-          stake: freeCard.stake,
-          scoring_factors: freeCard.scoring.factors,
-          scoring_weights: freeCard.scoring.weights,
-          scoring_score: freeCard.confidence,
-          category: freeCard.tier.name,
-          reasoning: freeCard.analysis,
-          telegram_message_id: msgId,
-          channel: "free",
-          status: "pending",
-          sent_at: new Date().toISOString(),
-          game_time: freeCard.game_time,
-          event_id: freeCard.game_id,
+          sport: freeCard.sport, sport_key: freeCard.sport_key, league: freeCard.league,
+          game: freeCard.game, pick: freeCard.pick, odds: freeCard.odds, bookmaker: freeCard.bookmaker,
+          pick_type: freeCard.pickType, confidence: freeCard.confidence, tier: freeCard.tier.name,
+          stake: freeCard.stake, scoring_factors: freeCard.scoring.factors, scoring_weights: freeCard.scoring.weights,
+          scoring_score: freeCard.confidence, category: freeCard.tier.name, reasoning: freeCard.analysis,
+          telegram_message_id: msgId, channel: "free", status: "pending",
+          sent_at: new Date().toISOString(), game_time: freeCard.game_time, event_id: freeCard.game_id,
           ...parseBetFields(freeCard.pick, freeCard.game),
           ...settlementFields(freeCard.sport_key, freeCard.game_time),
-          pick_hash: freeChain.pick_hash,
-          tx_hash: freeChain.tx_hash,
+          pick_hash: freeChain.pick_hash, tx_hash: freeChain.tx_hash,
           block_number: freeChain.block_number,
           block_timestamp: freeChain.block_timestamp?.toISOString() ?? null,
           verified: freeChain.verified,
@@ -773,21 +765,20 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
           await recordBet(supabase, row.id, freeCard.stake);
         }
       }
-
       picksSent++;
     } catch (err) {
       console.log(`   FREE send failed: ${(err as Error).message}`);
     }
+  }
 
-    // Send MAX teasers to free channel for MAXIMUM picks
-    for (const card of finalCards.filter((c) => c.tier.name === "MAXIMUM")) {
-      try {
-        const teaser = `🚨 <b>MAX PLAY</b> just dropped for ${card.sport} subscribers.\n🦈 Unlock → sharkline.ai`;
-        await sendTelegramHtml(teaser, telegramBotToken, telegramChannelId);
-        console.log(`   🚨 MAX teaser sent for ${card.sport}`);
-      } catch (err) {
-        console.log(`   MAX teaser failed: ${(err as Error).message}`);
-      }
+  // Send MAX teasers to free channel for MAXIMUM picks
+  for (const card of finalCards.filter((c) => c.tier.name === "MAXIMUM")) {
+    try {
+      const teaser = `🚨 <b>MAX PLAY</b> just dropped for ${card.sport} subscribers.\n🦈 Unlock → sharkline.ai`;
+      await sendTelegramHtml(teaser, telegramBotToken, telegramChannelId);
+      console.log(`   🚨 MAX teaser sent for ${card.sport}`);
+    } catch (err) {
+      console.log(`   MAX teaser failed: ${(err as Error).message}`);
     }
   }
 
@@ -804,6 +795,7 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
       skipped_duplicates: skippedDuplicates + skippedCrossRunDupes,
       skipped_low_confidence: skippedLowConfidence,
       tiers: {
+        FOUNDATION: finalCards.filter((c) => c.tier.name === "FOUNDATION").length,
         VALUE: finalCards.filter((c) => c.tier.name === "VALUE").length,
         STRONG_VALUE: finalCards.filter((c) => c.tier.name === "STRONG VALUE").length,
         MAXIMUM: finalCards.filter((c) => c.tier.name === "MAXIMUM").length,

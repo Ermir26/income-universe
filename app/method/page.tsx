@@ -164,12 +164,14 @@ interface LivePickScore {
 /* ─── Constants ─── */
 
 const TIER_COLORS: Record<string, string> = {
+  FOUNDATION: "text-blue-400",
   VALUE: "text-emerald-400",
   "STRONG VALUE": "text-orange-400",
   MAXIMUM: "text-purple-400",
 };
 
 const TIER_BG: Record<string, string> = {
+  FOUNDATION: "bg-blue-500/15 border-blue-500/30",
   VALUE: "bg-emerald-500/15 border-emerald-500/30",
   "STRONG VALUE": "bg-orange-500/15 border-orange-500/30",
   MAXIMUM: "bg-purple-500/15 border-purple-500/30",
