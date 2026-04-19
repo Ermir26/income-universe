@@ -662,7 +662,6 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
           await supabase.from("picks").insert({
             sport: card.sport, sport_key: card.sport_key, league: card.league,
             game: card.game, pick: card.pick, odds: card.odds, bookmaker: card.bookmaker,
-            pick_type: card.pickType,
             confidence: card.confidence, tier: card.tier.name, stake: card.stake,
             scoring_factors: card.scoring.factors, scoring_weights: card.scoring.weights,
             scoring_score: card.confidence, category: card.tier.name, reasoning: card.analysis,
@@ -696,7 +695,6 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
           pick: card.pick,
           odds: card.odds,
           bookmaker: card.bookmaker,
-          pick_type: card.pickType,
           confidence: card.confidence,
           tier: card.tier.name,
           stake: card.stake,
@@ -765,7 +763,7 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
         const { data: row } = await supabase.from("picks").insert({
           sport: freeCard.sport, sport_key: freeCard.sport_key, league: freeCard.league,
           game: freeCard.game, pick: freeCard.pick, odds: freeCard.odds, bookmaker: freeCard.bookmaker,
-          pick_type: freeCard.pickType, confidence: freeCard.confidence, tier: freeCard.tier.name,
+          confidence: freeCard.confidence, tier: freeCard.tier.name,
           stake: freeCard.stake, scoring_factors: freeCard.scoring.factors, scoring_weights: freeCard.scoring.weights,
           scoring_score: freeCard.confidence, category: freeCard.tier.name, reasoning: freeCard.analysis,
           telegram_message_id: msgId, channel: "free", status: "pending",
