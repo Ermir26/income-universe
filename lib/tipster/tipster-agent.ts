@@ -156,7 +156,7 @@ export async function fetchUpcomingGames(
   const results = await Promise.allSettled(
     sportKeys.map(async (sportKey) => {
       const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/odds/?apiKey=${apiKey}&regions=us,eu&markets=h2h,spreads,totals&oddsFormat=american&dateFormat=iso`;
-      const res = await fetch(url);
+      const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) {
         if (res.status === 401 || res.status === 429) {
           console.log(`   ⚠️ Odds API ${res.status} for ${sportKey} — will try ESPN`);
@@ -183,8 +183,11 @@ export async function fetchUpcomingGames(
   if (failedSportKeys.length > 0) {
     console.log(`   📡 ESPN fallback for ${failedSportKeys.length} sports: ${failedSportKeys.join(", ")}`);
     const espnGames = await fetchUpcomingGamesFromESPN(failedSportKeys, hoursAhead);
+    console.log(`   📡 ESPN returned ${espnGames.length} games`);
     allGames.push(...espnGames);
   }
+
+  console.log(`   Total games before filter: ${allGames.length}, cutoff: ${cutoff.toISOString()}`);
 
   // Deduplicate and filter to upcoming only
   const seen = new Set<string>();
@@ -224,9 +227,13 @@ async function fetchUpcomingGamesFromESPN(
         const res = await fetch(url, {
           headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" },
           signal: AbortSignal.timeout(10000),
+          cache: "no-store",
         });
 
-        if (!res.ok) continue;
+        if (!res.ok) {
+          console.log(`   ⚠️ ESPN ${res.status} for ${espnPath} date=${dateStr}`);
+          continue;
+        }
         const data = await res.json();
         const events = data.events || [];
 
