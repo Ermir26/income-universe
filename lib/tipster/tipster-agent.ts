@@ -657,7 +657,7 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
 
   // Method channel: confidence >= 70 (max 2) + foundation picks
   const METHOD_MIN_CONFIDENCE = 70;
-  const METHOD_MAX_PICKS = 2;
+  const METHOD_MAX_PICKS = 3;
   const methodPickIds = new Set<string>();
   let methodCount = 0;
   for (const c of liveCards) {

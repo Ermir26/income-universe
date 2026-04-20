@@ -11,6 +11,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { type SupabaseClient } from "@supabase/supabase-js";
 import { getTier, formatTierBadge, getTierStakeStars, type Tier } from "./tiers";
+import { buildResearchPackets, formatResearchForPrompt } from "../sports-data/research";
 import {
   calculateConfidence,
   type ScoringFactors,
@@ -18,7 +19,6 @@ import {
   type ScoringResult,
 } from "./scoring-engine";
 import { getBrandPromptRules } from "./brand";
-import { SPORT_KEY_TO_ESPN } from "../sports-data/espn-leagues";
 
 export interface GameData {
   id: string;
@@ -132,114 +132,7 @@ function formatGameTime(iso: string): string {
   }) + " EST";
 }
 
-// ─── Change 2: ESPN Real Data Context ───
-
-// In-memory cache for ESPN context data (1 hour TTL)
-const espnContextCache = new Map<string, { data: string; fetchedAt: number }>();
-const ESPN_CONTEXT_TTL = 3_600_000; // 1 hour
-
-interface ESPNTeamRecord {
-  name: string;
-  record: string;
-  homeAway: string;
-}
-
-async function fetchESPNContext(sportKeys: string[]): Promise<string> {
-  const cacheKey = sportKeys.sort().join(',');
-  const cached = espnContextCache.get(cacheKey);
-  if (cached && Date.now() - cached.fetchedAt < ESPN_CONTEXT_TTL) {
-    return cached.data;
-  }
-
-  const sections: string[] = [];
-  const seenLeagues = new Set<string>();
-
-  for (const sportKey of sportKeys) {
-    const espn = SPORT_KEY_TO_ESPN[sportKey];
-    if (!espn || seenLeagues.has(`${espn.sport}/${espn.league}`)) continue;
-    seenLeagues.add(`${espn.sport}/${espn.league}`);
-
-    try {
-      // Fetch today's scoreboard
-      const scoreUrl = `https://site.api.espn.com/apis/site/v2/sports/${espn.sport}/${espn.league}/scoreboard`;
-      const scoreRes = await fetch(scoreUrl, {
-        headers: { 'User-Agent': 'Sharkline/1.0' },
-        signal: AbortSignal.timeout(8_000),
-      });
-
-      if (!scoreRes.ok) continue;
-      const scoreData = await scoreRes.json();
-      const events = scoreData.events ?? [];
-      const leagueName = getLeagueName(sportKey);
-
-      if (events.length === 0) continue;
-
-      const lines: string[] = [`\n--- ${leagueName} Today ---`];
-
-      for (const event of events.slice(0, 10)) {
-        const comp = event.competitions?.[0];
-        if (!comp) continue;
-
-        const home = comp.competitors?.find((c: { homeAway: string }) => c.homeAway === 'home');
-        const away = comp.competitors?.find((c: { homeAway: string }) => c.homeAway === 'away');
-        if (!home || !away) continue;
-
-        const homeName = home.team?.displayName ?? '';
-        const awayName = away.team?.displayName ?? '';
-        const homeRecord = home.records?.[0]?.summary ?? '';
-        const awayRecord = away.records?.[0]?.summary ?? '';
-        const gameStatus = event.status?.type?.description ?? '';
-        const gameTime = event.date ? new Date(event.date).toLocaleTimeString('en-US', {
-          timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true,
-        }) : '';
-
-        let line = `  ${awayName} (${awayRecord || '?'}) @ ${homeName} (${homeRecord || '?'})`;
-        if (gameTime) line += ` — ${gameTime} ET`;
-        if (gameStatus && gameStatus !== 'Scheduled') line += ` [${gameStatus}]`;
-        lines.push(line);
-      }
-
-      if (lines.length > 1) sections.push(lines.join('\n'));
-
-      // Fetch standings (compact)
-      try {
-        const standUrl = `https://site.api.espn.com/apis/v2/sports/${espn.sport}/${espn.league}/standings`;
-        const standRes = await fetch(standUrl, {
-          headers: { 'User-Agent': 'Sharkline/1.0' },
-          signal: AbortSignal.timeout(8_000),
-        });
-        if (standRes.ok) {
-          const standData = await standRes.json();
-          const groups = standData.children ?? [];
-          const standLines: string[] = [`\n  ${leagueName} Standings (top 5 per division):`];
-          for (const group of groups.slice(0, 4)) {
-            const divName = group.name ?? '';
-            const entries = group.standings?.entries ?? [];
-            if (entries.length === 0) continue;
-            standLines.push(`    ${divName}:`);
-            for (const entry of entries.slice(0, 5)) {
-              const team = entry.team?.displayName ?? '';
-              const wins = entry.stats?.find((s: { name: string }) => s.name === 'wins')?.value ?? '?';
-              const losses = entry.stats?.find((s: { name: string }) => s.name === 'losses')?.value ?? '?';
-              standLines.push(`      ${team}: ${wins}-${losses}`);
-            }
-          }
-          if (standLines.length > 1) sections.push(standLines.join('\n'));
-        }
-      } catch { /* standings are supplementary */ }
-
-    } catch { /* non-critical */ }
-  }
-
-  const contextBlock = sections.length > 0
-    ? sections.join('\n')
-    : '(No ESPN data available for today)';
-
-  espnContextCache.set(cacheKey, { data: contextBlock, fetchedAt: Date.now() });
-  return contextBlock;
-}
-
-// ─── Change 4: Performance Feedback Loop ───
+// ─── Performance Feedback Loop ───
 
 interface PerformanceFeedback {
   totalPicks: number;
@@ -364,8 +257,8 @@ export async function generateCandidates(
 ): Promise<AnalysisCard[]> {
   const client = new Anthropic({ apiKey });
 
-  // Limit to 6 games max for the prompt to avoid hitting token limits
-  const selectedGames = games.slice(0, 6);
+  // Process all games — no artificial cap
+  const selectedGames = games;
   const sportKey = selectedGames[0]?.sport_key ?? '';
   const league = getLeagueName(sportKey);
 
@@ -375,9 +268,10 @@ export async function generateCandidates(
     return `GAME ${i + 1}: ${g.home_team} vs ${g.away_team}\nTime: ${g.commence_time}\nOdds:\n${odds}`;
   }).join('\n\n');
 
-  // Fetch ESPN context (Change 2)
+  // Fetch comprehensive research data (injuries, form, standings, weather)
   const uniqueKeys = [...new Set(selectedGames.map((g) => g.sport_key))];
-  const espnContext = await fetchESPNContext(uniqueKeys);
+  const researchPackets = await buildResearchPackets(uniqueKeys);
+  const researchBlock = formatResearchForPrompt(researchPackets);
 
   // Performance feedback (Change 4)
   const feedback = await getPerformanceFeedback(supabase);
@@ -402,30 +296,65 @@ You are selecting VALUE picks. Value picks target analytical edges where odds ar
 - These picks should have a real analytical basis, not just gut feeling.
 - Mark with "pickType": "value".`;
 
+  const candidateCount = Math.max(10, selectedGames.length * 2);
+
   const response = await client.messages.create({
     model: "claude-sonnet-4-20250514",
-    max_tokens: 4000,
+    max_tokens: 8000,
     messages: [
       {
         role: "user",
         content: `${getBrandPromptRules()}
 
-You are an expert sports analyst writing for Sharkline. Write in first person plural ("we"). Sound like a team of analysts who watch every game.
+You are an elite sports analyst combining 17 research dimensions for every game. Write in first person plural ("we"). Sound like a team of analysts who watch every game.
 
-Here is today's REAL schedule and team data from ESPN (current as of today — use this, do NOT rely on memory):
-${espnContext}
+═══════════════════════════════════════
+COMPREHENSIVE RESEARCH DATA (LIVE)
+═══════════════════════════════════════
+${researchBlock}
 ${feedbackBlock}
+
+═══════════════════════════════════════
+17 ANALYSIS DIMENSIONS
+═══════════════════════════════════════
+For EVERY game, you MUST cross-reference these dimensions before making a pick:
+
+1. STANDINGS CONTEXT — Where each team sits. Fighting for title/playoffs/relegation? Nothing to play for?
+2. FORM — Last 5 results. Streak direction. Goals scored/conceded trends.
+3. INJURIES — Key players out or doubtful. Impact on team strength.
+4. HEAD-TO-HEAD — Historical matchups between these teams. Home/away H2H splits.
+5. WEATHER — Temperature, wind, rain for outdoor sports. How it affects gameplay.
+6. MOTIVATION — What's at stake? Must-win? Dead rubber? Revenge game?
+7. TACTICAL MATCHUP — Style matchups (press vs possession, run-heavy vs pass, etc).
+8. SCHEDULING — Back-to-back? Rest days? Mid-week fixtures?
+9. TRAVEL/FATIGUE — Road trip length, timezone changes, back-to-backs.
+10. HOME/AWAY SPLITS — How each team performs at home vs away specifically.
+11. LINE MOVEMENT — Has the line moved? Which direction? Sharp vs public money.
+12. PLAYER MATCHUPS — Key individual battles that could decide the game.
+13. SEASONAL TRENDS — Time-of-season patterns (early season chaos, late season motivation).
+14. VENUE HISTORY — How teams perform at this specific venue.
+15. COACHING — Tactical tendencies, recent adjustments, record vs opponent.
+16. ODDS VALUE — True probability vs implied probability from odds. Where's the mispricing?
+17. EXTERNAL FACTORS — Crowd, travel bans, midweek European games, playoff implications.
 
 ${BET_TYPE_RULES}
 
 ${pickTypeInstruction}
 ${alreadyPostedBlock}
 
-Here are the games to analyze:
+═══════════════════════════════════════
+GAMES TO ANALYZE (with real odds)
+═══════════════════════════════════════
 
 ${gamesBlock}
 
-Generate 10 candidate picks across these games. Rate honestly — a 60-65 confidence pick with strong data backing is still worth publishing. We will filter down to the best 2-3, so include a range of confidence levels.
+═══════════════════════════════════════
+INSTRUCTIONS
+═══════════════════════════════════════
+
+Generate up to ${candidateCount} candidate picks across ALL ${selectedGames.length} games. Be AGGRESSIVE with volume — if ${selectedGames.length} games have clear edges, recommend picks for all of them. Multiple picks per game allowed (moneyline + total).
+
+For each pick, your reasoning MUST reference at least 4-5 of the 17 dimensions above with CONCRETE details from the research data. No vague analysis — cite specific records, injury names, standings positions, form streaks.
 
 You must also rate each scoring factor from 0-100 based on your analysis.
 
@@ -438,7 +367,7 @@ Return ONLY a JSON array (no markdown, no explanation):
     "bookmaker": "best bookmaker from the odds above",
     "pickType": "${pickTypeHint}",
     "confidence": 72,
-    "analysis": "3-4 sentences of first-person analysis. Be specific about why this is a good bet. Reference form, matchups, or situational factors.",
+    "analysis": "4-6 sentences referencing at least 4 specific research dimensions. Cite actual data: records, injury names, form streaks, standings positions.",
     "form_summary": "W4" or "L2W3" etc,
     "h2h_summary": "3-1 this season" or "first meeting",
     "line_movement": "↑ opened +3.5 now +2.5" or "steady",
@@ -456,6 +385,7 @@ Return ONLY a JSON array (no markdown, no explanation):
 RULES:
 - Use REAL odds from the games above. Pick the best value line.
 - You may suggest multiple picks from the same game (e.g., moneyline + total).
+- Reject odds worse than +200 (low hit rate).
 - odds_value: how much value vs implied probability (80+ = great value)
 - form_factor: recent form of the picked team/player (80+ = hot streak)
 - h2h_factor: head-to-head record favors pick (50 = neutral, 80+ = dominant)
