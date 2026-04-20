@@ -788,7 +788,7 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
     // MAX teasers to free channel
     for (const card of liveCards.filter((c) => c.tier.name === "MAXIMUM" && !freePickIds.has(c.game_id))) {
       try {
-        const teaser = `🚨 <b>MAX PLAY</b> just dropped for ${card.sport} subscribers.\n🦈 Unlock → sharkline.ai`;
+        const teaser = `🚨 <b>MAX PLAY</b> just dropped for ${card.sport} subscribers.\n🦈 VIP from $37/weekend | Shark Method from $67/weekend → sharkline.ai`;
         await sendTelegramHtml(teaser, telegramBotToken, telegramChannelId);
       } catch { /* non-critical */ }
     }
@@ -902,7 +902,7 @@ function formatFree(card: AnalysisCard): string {
   let html = `🦈 <b>FREE PICK</b>\n`;
   html += `${card.game}\n`;
   html += `Pick: <b>${card.pick}</b> at ${card.odds}\n\n`;
-  html += `Want full analysis + more picks? → sharkline.ai\n`;
+  html += `🦈 VIP from $37/weekend | Shark Method from $67/weekend → sharkline.ai\n`;
   html += `🦈 Sharkline — on-chain before kickoff`;
   return html;
 }

@@ -453,53 +453,48 @@ function TeaserPage({ settledCount, email, setEmail, wlStatus, setWlStatus }: {
   );
 }
 
-// ─── Pricing Section with Annual Toggle ───
-
-const PRICING = {
-  singleSport: { monthly: 19, annual: 149, savings: 79 },
-  threeSports: { monthly: 39, annual: 349, savings: 119 },
-  allSports: { monthly: 69, annual: 499, savings: 329 },
-};
+// ─── Pricing Section ───
 
 function PricingSection({ onNotify }: { onNotify: (email: string) => void }) {
-  const [annual, setAnnual] = useState(false);
-
   return (
     <section id="pricing" className="relative max-w-3xl mx-auto mb-10 px-5 scroll-mt-16">
-      <h2 className="text-2xl font-bold mb-3 text-center text-slate-100">VIP Packages</h2>
+      <h2 className="text-2xl font-bold mb-2 text-center text-slate-100">Choose Your Edge</h2>
+      <p className="text-center text-xs text-slate-400 mb-6">Weekend and weekly passes. No contracts.</p>
 
-      {/* Toggle */}
-      <div className="flex items-center justify-center gap-3 mb-6">
-        <span className={`text-sm ${!annual ? "text-slate-100 font-semibold" : "text-slate-500"}`}>Monthly</span>
-        <button
-          onClick={() => setAnnual(!annual)}
-          className={`relative w-12 h-6 rounded-full transition-colors ${annual ? "bg-indigo-600" : "bg-slate-700"}`}
-        >
-          <div className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-transform ${annual ? "translate-x-[26px]" : "translate-x-0.5"}`} />
-        </button>
-        <span className={`text-sm ${annual ? "text-slate-100 font-semibold" : "text-slate-500"}`}>Annual</span>
-        {annual && <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full font-bold">SAVE MORE</span>}
-      </div>
+      <div className="grid sm:grid-cols-2 gap-4">
+        {/* VIP */}
+        <div className="rounded-2xl border border-slate-700 bg-slate-900/80 p-5">
+          <div className="text-center mb-4">
+            <div className="text-xl mb-1">⚡</div>
+            <h3 className="text-base font-bold text-slate-100">VIP</h3>
+          </div>
+          <ul className="text-[11px] text-slate-300 space-y-1 mb-4">
+            <li>✅ 8-10 daily picks across all sports</li>
+            <li>✅ Full 17-dimension analysis</li>
+            <li>✅ Confidence tiers and reasoning</li>
+            <li>✅ Live score updates</li>
+          </ul>
+          <PublicPriceTier label="Weekend" price={37} sub="One winning pick covers your pass" onNotify={onNotify} />
+          <PublicPriceTier label="Weekly" price={67} sub="All sports. All picks. Full analysis." onNotify={onNotify} />
+        </div>
 
-      <div className="grid sm:grid-cols-3 gap-3">
-        <PriceCard name="Single Sport" icon="🏀" desc="Pick any one sport"
-          price={annual ? PRICING.singleSport.annual : PRICING.singleSport.monthly}
-          period={annual ? "/yr" : "/mo"}
-          savings={annual ? PRICING.singleSport.savings : undefined}
-          features={["All picks for your sport", "Full analysis cards", "Blockchain verification", "Private VIP channel"]}
-          onNotify={onNotify} />
-        <PriceCard name="3 Sports" icon="⚽🏒🏀" desc="Pick any three sports"
-          price={annual ? PRICING.threeSports.annual : PRICING.threeSports.monthly}
-          period={annual ? "/yr" : "/mo"} featured badge="BEST VALUE"
-          savings={annual ? PRICING.threeSports.savings : undefined}
-          features={["All picks for 3 sports", "Full analysis cards", "Blockchain verification", "Private VIP channel", "Priority support"]}
-          onNotify={onNotify} />
-        <PriceCard name="All Sports Pass" icon="🌍" desc="Every sport, every pick"
-          price={annual ? PRICING.allSports.annual : PRICING.allSports.monthly}
-          period={annual ? "/yr" : "/mo"} amber
-          savings={annual ? PRICING.allSports.savings : undefined}
-          features={["ALL sports, ALL picks", "Full analysis cards", "Blockchain verification", "MAXIMUM plays first", "Priority support"]}
-          onNotify={onNotify} />
+        {/* Method */}
+        <div className="relative rounded-2xl border-2 border-cyan-500/40 bg-gradient-to-b from-cyan-900/20 to-slate-900/80 p-5">
+          <div className="text-center mb-4">
+            <div className="text-xl mb-1">🦈</div>
+            <h3 className="text-base font-bold text-slate-100">Shark Method</h3>
+          </div>
+          <ul className="text-[11px] text-slate-300 space-y-1 mb-4">
+            <li>✅ Everything in VIP</li>
+            <li>✅ Curated top 2-3 picks only</li>
+            <li>✅ Exact unit staking instructions</li>
+            <li>✅ Bankroll &amp; exposure tracking</li>
+            <li>✅ &ldquo;No edge&rdquo; day protection</li>
+            <li>✅ Monthly performance reports</li>
+          </ul>
+          <PublicPriceTier label="Weekend" price={67} sub="The full system for the weekend slate" onNotify={onNotify} />
+          <PublicPriceTier label="Weekly" price={117} sub="Elite access. Curated picks. Bankroll protection." badge="MOST POPULAR" onNotify={onNotify} />
+        </div>
       </div>
     </section>
   );
@@ -516,39 +511,31 @@ function Stat({ label, value, hl = false }: { label: string; value: string; hl?:
   );
 }
 
-function PriceCard({ name, icon, desc, price, period, features, featured, badge, amber, savings, onNotify }: {
-  name: string; icon: string; desc: string; price: number; period: string; features: string[];
-  featured?: boolean; badge?: string; amber?: boolean; savings?: number;
+function PublicPriceTier({ label, price, sub, badge, onNotify }: {
+  label: string; price: number; sub: string; badge?: string;
   onNotify: (email: string) => void;
 }) {
   const [cardEmail, setCardEmail] = useState("");
   const [show, setShow] = useState(false);
-  const border = featured ? "border-2 border-indigo-500/50" : amber ? "border border-amber-500/30" : "border border-slate-700";
-  const bg = featured ? "bg-gradient-to-b from-indigo-900/30 to-slate-900/80" : "bg-slate-900/80";
-  const pc = featured ? "text-indigo-300" : amber ? "text-amber-300" : "text-slate-100";
-  const nc = amber ? "text-amber-300" : "text-slate-100";
 
   return (
-    <div className={`${bg} ${border} rounded-2xl p-5 text-center relative`}>
-      {badge && <div className="absolute -top-2.5 left-1/2 -translate-x-1/2 bg-indigo-600 text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full">{badge}</div>}
-      <div className="text-2xl mb-1">{icon}</div>
-      <h3 className={`text-base font-bold ${nc} mb-0.5`}>{name}</h3>
-      <p className="text-xs text-slate-400 mb-3">{desc}</p>
-      <div className={`text-2xl font-extrabold ${pc} mb-1`}>${price}<span className="text-xs font-normal text-slate-400">{period}</span></div>
-      {savings && <div className="text-[10px] text-emerald-400 font-bold mb-1">Save ${savings}/year</div>}
-      <ul className="text-left text-xs text-slate-300 mt-3 space-y-1.5">
-        {features.map((f) => <li key={f}>✅ {f}</li>)}
-      </ul>
+    <div className={`relative rounded-xl border ${badge ? "border-cyan-500/40 bg-cyan-500/5" : "border-white/[0.08] bg-white/[0.02]"} p-3 mb-2`}>
+      {badge && <div className="absolute -top-2 left-1/2 -translate-x-1/2 bg-gradient-to-r from-cyan-600 to-indigo-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-full">{badge}</div>}
+      <div className="flex items-center justify-between mb-0.5">
+        <span className="text-xs font-semibold text-slate-300">{label}</span>
+        <span className="text-lg font-black text-white">${price}</span>
+      </div>
+      <p className="text-[10px] text-slate-500 mb-2">{sub}</p>
       {show ? (
-        <div className="mt-3 flex gap-1">
+        <div className="flex gap-1">
           <input type="email" value={cardEmail} onChange={(e) => setCardEmail(e.target.value)} placeholder="your@email.com"
-            className="flex-1 px-2.5 py-1.5 bg-white/[0.06] border border-white/10 rounded-lg text-xs text-white placeholder:text-slate-500 focus:outline-none" />
-          <button onClick={() => onNotify(cardEmail)} className="px-2.5 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-semibold">Go</button>
+            className="flex-1 px-2 py-1.5 bg-white/[0.06] border border-white/10 rounded-lg text-xs text-white placeholder:text-slate-500 focus:outline-none" />
+          <button onClick={() => onNotify(cardEmail)} className="px-2 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-semibold">Go</button>
         </div>
       ) : (
         <button onClick={() => setShow(true)}
-          className={`mt-4 w-full py-2 rounded-xl font-semibold text-xs border ${featured ? "bg-indigo-600/30 text-indigo-300 border-indigo-500/30" : amber ? "bg-amber-700/20 text-amber-300 border-amber-500/30" : "bg-slate-700/50 text-slate-300 border-slate-600"}`}>
-          Notify Me — Coming Soon
+          className="w-full py-1.5 rounded-lg font-semibold text-xs bg-slate-700/50 text-slate-300 border border-slate-600 hover:bg-slate-700 transition-colors">
+          Join Waitlist
         </button>
       )}
     </div>

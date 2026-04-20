@@ -22,9 +22,8 @@ export const BRAND = {
     vipChannel: process.env.TELEGRAM_VIP_CHANNEL_ID || null,
   },
   pricing: {
-    singleSport: { monthly: 19, annual: 149, annualSavings: 79 },
-    threeSports: { monthly: 39, annual: 349, annualSavings: 119 },
-    allSports: { monthly: 69, annual: 499, annualSavings: 329 },
+    vip: { weekend: 37, weekly: 67 },
+    method: { weekend: 67, weekly: 117 },
   },
   activeSports: (process.env.ACTIVE_SPORTS || "soccer,basketball").split(","),
   footer: "🦈 Sharkline — sharkline.ai",

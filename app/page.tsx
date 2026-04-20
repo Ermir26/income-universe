@@ -60,11 +60,9 @@ const AFFILIATE_BOOKS = [
   { name: "Betway", color: "#00a3e0", url: "#" },
 ];
 
-const LP = {
-  starter: { monthly: 19, annual: 149, savings: 79 },
-  pro: { monthly: 39, annual: 349, savings: 119 },
-  method: { monthly: 59, annual: 499, savings: 209 },
-  elite: { monthly: 99, annual: 899, savings: 289 },
+const PRICING = {
+  vip: { weekend: 37, weekly: 67 },
+  method: { weekend: 67, weekly: 117 },
 };
 
 // ─── Main Component ───
@@ -613,87 +611,82 @@ function TrustCard({ icon, title, desc, gradient, border }: { icon: string; titl
 }
 
 function PricingSection({ onNotify }: { onNotify: (email: string, tier: string) => void }) {
-  const [annual, setAnnual] = useState(false);
-
   return (
     <section id="pricing" className="relative z-10 max-w-4xl mx-auto mb-24 px-5 scroll-mt-20">
-      <SectionTitle title="VIP Packages" subtitle="Unlock MAXIMUM confidence plays and full analysis cards" />
-      <div className="flex items-center justify-center gap-3 mb-10">
-        <span className={`text-sm font-semibold ${!annual ? "text-white" : "text-slate-500"}`}>Monthly</span>
-        <button onClick={() => setAnnual(!annual)}
-          className={`relative w-14 h-7 rounded-full transition-colors duration-300 ${annual ? "bg-indigo-600" : "bg-slate-700"}`}>
-          <div className={`absolute top-1 w-5 h-5 bg-white rounded-full transition-transform duration-300 shadow-md ${annual ? "translate-x-[30px]" : "translate-x-1"}`} />
-        </button>
-        <span className={`text-sm font-semibold ${annual ? "text-white" : "text-slate-500"}`}>Annual</span>
-        {annual && <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-2.5 py-0.5 rounded-full font-bold uppercase tracking-wider animate-fade-in">Save More</span>}
-      </div>
+      <SectionTitle title="Choose Your Edge" subtitle="Weekend and weekly passes. No contracts. Cancel anytime." />
 
-      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        <PriceCard icon={"\u{1F3C0}"} name="Starter" desc="3 sports, delayed picks"
-          price={annual ? LP.starter.annual : LP.starter.monthly} period={annual ? "/yr" : "/mo"}
-          savings={annual ? LP.starter.savings : undefined}
-          features={["3 sports of your choice", "Delayed picks (30 min)", "Basic stats dashboard", "Blockchain verification"]}
-          onNotify={(e) => onNotify(e, "starter")} />
-        <PriceCard icon={"\u26BD\u{1F3D2}\u{1F3C0}"} name="Pro" desc="All sports, real-time"
-          price={annual ? LP.pro.annual : LP.pro.monthly} period={annual ? "/yr" : "/mo"}
-          savings={annual ? LP.pro.savings : undefined}
-          features={["ALL sports, real-time picks", "Full analysis cards", "Blockchain verification", "Full performance dashboard", "Priority support"]}
-          onNotify={(e) => onNotify(e, "pro")} />
-        <PriceCard icon={"\u{1F988}"} name="Shark Method Pro" desc="The complete system"
-          price={annual ? LP.method.annual : LP.method.monthly} period={annual ? "/yr" : "/mo"}
-          featured badge="FLAGSHIP" savings={annual ? LP.method.savings : undefined}
-          features={["Everything in Pro", "Live bankroll tracker", "Personal unit calculator", "Monthly P&L reports", "Performance by sport/league", "Push notifications"]}
-          onNotify={(e) => onNotify(e, "method")} />
-        <PriceCard icon={"\u{1F30D}"} name="Elite" desc="Everything + direct access"
-          price={annual ? LP.elite.annual : LP.elite.monthly} period={annual ? "/yr" : "/mo"}
-          premium savings={annual ? LP.elite.savings : undefined}
-          features={["Everything in Shark Method Pro", "Direct analyst access", "Custom sport alerts", "Monthly strategy calls", "Early access to new features"]}
-          onNotify={(e) => onNotify(e, "elite")} />
+      <div className="grid sm:grid-cols-2 gap-6 max-w-3xl mx-auto">
+        {/* VIP Column */}
+        <div className="rounded-3xl border border-white/[0.08] bg-white/[0.02] p-7">
+          <div className="text-center mb-6">
+            <div className="text-3xl mb-2">{"\u26A1"}</div>
+            <h3 className="text-xl font-black text-white">VIP</h3>
+            <p className="text-sm text-slate-400 mt-1">All picks. Full analysis.</p>
+          </div>
+          <ul className="text-sm text-slate-300 space-y-2 mb-6">
+            <li className="flex items-start gap-2"><span className="text-emerald-400 mt-0.5">{"\u2713"}</span>8-10 daily picks across all sports</li>
+            <li className="flex items-start gap-2"><span className="text-emerald-400 mt-0.5">{"\u2713"}</span>Full analysis with 17-dimension research</li>
+            <li className="flex items-start gap-2"><span className="text-emerald-400 mt-0.5">{"\u2713"}</span>Confidence tiers and reasoning</li>
+            <li className="flex items-start gap-2"><span className="text-emerald-400 mt-0.5">{"\u2713"}</span>Live score updates</li>
+          </ul>
+          <div className="space-y-3">
+            <PriceTierRow label="Weekend Pass" price={PRICING.vip.weekend} sub="One winning pick covers your pass" onNotify={(e) => onNotify(e, "vip-weekend")} />
+            <PriceTierRow label="Weekly Pass" price={PRICING.vip.weekly} sub="All sports. All picks. Full analysis." onNotify={(e) => onNotify(e, "vip-weekly")} />
+          </div>
+        </div>
+
+        {/* Method Column */}
+        <div className="relative rounded-3xl border-2 border-cyan-500/40 bg-gradient-to-b from-cyan-900/20 via-cyan-900/5 to-transparent p-7 shadow-xl shadow-cyan-500/10">
+          <div className="text-center mb-6">
+            <div className="text-3xl mb-2">{"\u{1F988}"}</div>
+            <h3 className="text-xl font-black text-white">Shark Method</h3>
+            <p className="text-sm text-cyan-400 mt-1">The complete system.</p>
+          </div>
+          <ul className="text-sm text-slate-300 space-y-2 mb-6">
+            <li className="flex items-start gap-2"><span className="text-emerald-400 mt-0.5">{"\u2713"}</span>Everything in VIP</li>
+            <li className="flex items-start gap-2"><span className="text-emerald-400 mt-0.5">{"\u2713"}</span>Curated top 2-3 picks (highest confidence)</li>
+            <li className="flex items-start gap-2"><span className="text-emerald-400 mt-0.5">{"\u2713"}</span>Exact unit staking with every pick</li>
+            <li className="flex items-start gap-2"><span className="text-emerald-400 mt-0.5">{"\u2713"}</span>Daily bankroll &amp; exposure tracking</li>
+            <li className="flex items-start gap-2"><span className="text-emerald-400 mt-0.5">{"\u2713"}</span>Streak alerts &amp; system status</li>
+            <li className="flex items-start gap-2"><span className="text-emerald-400 mt-0.5">{"\u2713"}</span>&ldquo;No edge&rdquo; days &mdash; we sit out weak days</li>
+            <li className="flex items-start gap-2"><span className="text-emerald-400 mt-0.5">{"\u2713"}</span>Sport ROI breakdown</li>
+            <li className="flex items-start gap-2"><span className="text-emerald-400 mt-0.5">{"\u2713"}</span>Monthly performance reports</li>
+          </ul>
+          <div className="space-y-3">
+            <PriceTierRow label="Weekend Pass" price={PRICING.method.weekend} sub="The full system for the weekend slate" onNotify={(e) => onNotify(e, "method-weekend")} />
+            <PriceTierRow label="Weekly Pass" price={PRICING.method.weekly} sub="Elite access. Curated picks. Bankroll protection." badge="MOST POPULAR" onNotify={(e) => onNotify(e, "method-weekly")} />
+          </div>
+        </div>
       </div>
     </section>
   );
 }
 
-function PriceCard({ icon, name, desc, price, period, features, featured, badge, premium, savings, onNotify }: {
-  icon: string; name: string; desc: string; price: number; period: string; features: string[];
-  featured?: boolean; badge?: string; premium?: boolean; savings?: number;
+function PriceTierRow({ label, price, sub, badge, onNotify }: {
+  label: string; price: number; sub: string; badge?: string;
   onNotify: (email: string) => void;
 }) {
   const [cardEmail, setCardEmail] = useState("");
   const [showForm, setShowForm] = useState(false);
 
-  const border = featured ? "border-2 border-indigo-500/50 shadow-xl shadow-indigo-500/10"
-    : premium ? "border border-amber-500/30" : "border border-white/[0.08]";
-  const bg = featured ? "bg-gradient-to-b from-indigo-900/30 via-indigo-900/10 to-transparent" : "bg-white/[0.02]";
-  const priceColor = featured ? "text-indigo-300" : premium ? "text-amber-300" : "text-white";
-
   return (
-    <div className={`relative ${bg} ${border} rounded-3xl p-7 text-center hover:scale-[1.02] transition-transform duration-300`}>
-      {badge && <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 bg-gradient-to-r from-indigo-600 to-cyan-600 text-white text-xs font-bold px-4 py-1 rounded-full shadow-lg">{badge}</div>}
-      <div className="text-3xl mb-3">{icon}</div>
-      <h3 className="text-lg font-black text-white mb-1">{name}</h3>
-      <p className="text-sm text-slate-400 mb-5">{desc}</p>
-      <div className={`text-4xl font-black ${priceColor} mb-1`}>
-        ${price}<span className="text-base font-normal text-slate-500">{period}</span>
+    <div className={`relative rounded-2xl border ${badge ? "border-cyan-500/40 bg-cyan-500/[0.06]" : "border-white/[0.08] bg-white/[0.02]"} p-4`}>
+      {badge && <div className="absolute -top-2.5 left-1/2 -translate-x-1/2 bg-gradient-to-r from-cyan-600 to-indigo-600 text-white text-[10px] font-bold px-3 py-0.5 rounded-full shadow-lg">{badge}</div>}
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-sm font-semibold text-slate-300">{label}</span>
+        <span className="text-2xl font-black text-white">${price}</span>
       </div>
-      {savings && <div className="text-xs text-emerald-400 font-bold mb-2">Save ${savings}/year</div>}
-      <ul className="text-left text-sm text-slate-300 mt-5 space-y-2.5">
-        {features.map((f) => <li key={f} className="flex items-start gap-2"><span className="text-emerald-400 mt-0.5">{"\u2713"}</span><span>{f}</span></li>)}
-      </ul>
+      <p className="text-xs text-slate-500 mb-3">{sub}</p>
       {showForm ? (
-        <div className="mt-5 flex gap-1.5">
+        <div className="flex gap-1.5">
           <input type="email" value={cardEmail} onChange={(e) => setCardEmail(e.target.value)} placeholder="your@email.com"
-            className="flex-1 px-3 py-2.5 bg-white/[0.06] border border-white/10 rounded-xl text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500/50" />
-          <button onClick={() => onNotify(cardEmail)} className="px-4 py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-500 transition-colors">Go</button>
+            className="flex-1 px-3 py-2 bg-white/[0.06] border border-white/10 rounded-xl text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500/50" />
+          <button onClick={() => onNotify(cardEmail)} className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-500 transition-colors">Go</button>
         </div>
       ) : (
         <button onClick={() => setShowForm(true)}
-          className={`mt-6 w-full py-3 rounded-xl font-bold text-sm transition-all duration-300 ${
-            featured ? "bg-gradient-to-r from-indigo-600 to-cyan-600 text-white hover:shadow-lg hover:shadow-indigo-500/20"
-            : premium ? "bg-amber-600/20 text-amber-300 border border-amber-500/30 hover:bg-amber-600/30"
-            : "bg-white/[0.06] text-slate-300 border border-white/10 hover:bg-white/[0.1]"
-          }`}>
-          Notify Me &mdash; Coming Soon
+          className="w-full py-2.5 rounded-xl font-bold text-sm bg-white/[0.06] text-slate-300 border border-white/10 hover:bg-white/[0.1] transition-all duration-300">
+          Join Waitlist
         </button>
       )}
     </div>
