@@ -20,6 +20,7 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
 const CRON_SECRET = process.env.CRON_SECRET ?? '';
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? '';
 const VIP_CHANNEL_ID = process.env.TELEGRAM_VIP_CHANNEL_ID ?? process.env.VIP_CHANNEL_ID ?? '';
+const METHOD_CHANNEL_ID = process.env.TELEGRAM_METHOD_CHANNEL_ID ?? '';
 
 const MAX_PICKS_PER_DAY = 5;
 
@@ -180,6 +181,7 @@ export async function GET(request: Request) {
       telegramBotToken: TELEGRAM_BOT_TOKEN,
       telegramChannelId: process.env.TELEGRAM_CHANNEL_ID ?? '',
       vipChannelId: VIP_CHANNEL_ID,
+      methodChannelId: METHOD_CHANNEL_ID,
       supabase,
       minHoursAhead: 24,
       maxPicks: MAX_PICKS_PER_DAY,
@@ -230,6 +232,7 @@ export async function GET(request: Request) {
       generated: result.cardsGenerated,
       posted_free: result.postedFree ?? 0,
       posted_vip: result.postedVip ?? 0,
+      posted_method: result.postedMethod ?? 0,
       skipped_low_confidence: skippedLowConf,
       skipped_duplicates: skippedDupes,
       skipped_exposure: skippedExposure,

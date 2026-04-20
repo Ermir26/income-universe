@@ -114,6 +114,7 @@ interface TipsterConfig {
   telegramBotToken: string;
   telegramChannelId: string;
   vipChannelId?: string;
+  methodChannelId?: string;
   supabase: SupabaseClient;
   sportKeys?: string[];
   minHoursAhead?: number;
@@ -136,6 +137,7 @@ export interface TipsterResult {
   skippedExposure?: number;
   postedFree?: number;
   postedVip?: number;
+  postedMethod?: number;
 }
 
 /**
@@ -322,7 +324,7 @@ async function fetchUpcomingGamesFromESPN(
 export async function runTipster(config: TipsterConfig): Promise<TipsterResult> {
   const {
     oddsApiKey, anthropicApiKey, telegramBotToken, telegramChannelId,
-    vipChannelId, supabase, sportKeys, minHoursAhead = 24, paperMode = false,
+    vipChannelId, methodChannelId, supabase, sportKeys, minHoursAhead = 24, paperMode = false,
     maxPicks, maxExposureUnits, existingEventIds, todaysPicks, pausedSports = [], cautionSports = [],
   } = config;
 
@@ -640,160 +642,190 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
     return paperMode || paperSportKeys.includes(card.sport_key);
   }
 
-  // Pre-determine which cards will also go to the free channel:
-  // Foundation picks + one VALUE pick go to both channels.
-  const preLiveCards = finalCards.filter((c) => !isPaperSport(c));
-  const freeCardGameIds = new Set<string>();
-  // All FOUNDATION picks go to free channel
-  for (const c of preLiveCards) {
-    if (c.tier.name === "FOUNDATION") freeCardGameIds.add(c.game_id);
+  // ── Determine channel eligibility for each pick ──
+  // Sort by confidence DESC (already sorted, but ensure)
+  finalCards.sort((a, b) => b.confidence - a.confidence);
+  const liveCards = finalCards.filter((c) => !isPaperSport(c));
+
+  // Free channel: foundation picks + 1 highest-confidence pick
+  const freePickIds = new Set<string>();
+  for (const c of liveCards) {
+    if (c.tier.name === "FOUNDATION") freePickIds.add(c.game_id);
   }
-  // Plus one VALUE pick (the teaser)
-  const valueTeaser = preLiveCards.find((c) => c.tier.name === "VALUE") ?? preLiveCards.find((c) => c.tier.name !== "FOUNDATION");
-  if (valueTeaser) freeCardGameIds.add(valueTeaser.game_id);
+  const topPick = liveCards.find((c) => !freePickIds.has(c.game_id));
+  if (topPick) freePickIds.add(topPick.game_id);
 
-  // VIP channel gets all cards
-  if (vipChannelId) {
-    for (const card of finalCards) {
-      try {
-        // Paper mode: log to Supabase but don't send to Telegram
-        if (isPaperSport(card)) {
-          const chain = await blockchainTimestamp(card);
-          await supabase.from("picks").insert({
-            sport: card.sport, sport_key: card.sport_key, league: card.league,
-            game: card.game, pick: card.pick, odds: card.odds, bookmaker: card.bookmaker,
-            confidence: card.confidence, tier: card.tier.name, stake: card.stake,
-            scoring_factors: card.scoring.factors, scoring_weights: card.scoring.weights,
-            scoring_score: card.confidence, category: card.tier.name, reasoning: card.analysis,
-            channel: "paper", status: "pending", sent_at: new Date().toISOString(),
-            game_time: card.game_time, event_id: card.game_id,
-            ...parseBetFields(card.pick, card.game),
-            ...settlementFields(card.sport_key, card.game_time),
-            pick_hash: chain.pick_hash, tx_hash: chain.tx_hash,
-            block_number: chain.block_number,
-            block_timestamp: chain.block_timestamp?.toISOString() ?? null,
-            verified: chain.verified,
-          });
-          console.log(`   📝 PAPER: ${card.tier.emoji} ${card.sport} ${card.game}`);
-          continue;
-        }
+  // Method channel: confidence >= 70 (max 2) + foundation picks
+  const METHOD_MIN_CONFIDENCE = 70;
+  const METHOD_MAX_PICKS = 2;
+  const methodPickIds = new Set<string>();
+  let methodCount = 0;
+  for (const c of liveCards) {
+    if (c.tier.name === "FOUNDATION") {
+      methodPickIds.add(c.game_id);
+    } else if (c.confidence >= METHOD_MIN_CONFIDENCE && methodCount < METHOD_MAX_PICKS) {
+      methodPickIds.add(c.game_id);
+      methodCount++;
+    }
+  }
 
-        // Blockchain timestamp before sending
+  // ── Get bankroll context for Method format ──
+  let currentBankroll = 100;
+  let todayExposedUnits = 0;
+  if (methodChannelId) {
+    try {
+      const { data: bankrollData } = await supabase
+        .from("bankroll_log")
+        .select("balance")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .single();
+      if (bankrollData?.balance) currentBankroll = parseFloat(bankrollData.balance);
+    } catch { /* use default */ }
+    try {
+      const todayStart = new Date();
+      todayStart.setUTCHours(0, 0, 0, 0);
+      const { data: todayPicks } = await supabase
+        .from("picks")
+        .select("stake")
+        .gte("sent_at", todayStart.toISOString())
+        .neq("channel", "paper");
+      todayExposedUnits = (todayPicks ?? []).reduce((sum, p) => sum + (parseFloat(p.stake) || 0), 0);
+    } catch { /* use default */ }
+  }
+
+  let postedMethod = 0;
+
+  // ── Step 1: Insert picks into database + send to VIP ──
+  for (const card of finalCards) {
+    try {
+      // Paper mode: log to Supabase but don't send to Telegram
+      if (isPaperSport(card)) {
         const chain = await blockchainTimestamp(card);
-        const html = appendChainBadge(card.telegram_html, chain, card.game_time);
-
-        const msgId = await sendTelegramHtml(html, telegramBotToken, vipChannelId);
-        console.log(`   📤 VIP: ${card.tier.emoji} ${card.sport} ${card.game} → msg:${msgId}`);
-        postedVip++;
-
-        // Log to Supabase
-        const { data: row } = await supabase.from("picks").insert({
-          sport: card.sport,
-          sport_key: card.sport_key,
-          league: card.league,
-          game: card.game,
-          pick: card.pick,
-          odds: card.odds,
-          bookmaker: card.bookmaker,
-          confidence: card.confidence,
-          tier: card.tier.name,
-          stake: card.stake,
-          scoring_factors: card.scoring.factors,
-          scoring_weights: card.scoring.weights,
-          scoring_score: card.confidence,
-          category: card.tier.name,
-          reasoning: card.analysis,
-          telegram_message_id: msgId,
-          channel: freeCardGameIds.has(card.game_id) ? "both" : "vip",
-          status: "pending",
-          sent_at: new Date().toISOString(),
-          game_time: card.game_time,
-          event_id: card.game_id,
+        await supabase.from("picks").insert({
+          sport: card.sport, sport_key: card.sport_key, league: card.league,
+          game: card.game, pick: card.pick, odds: card.odds, bookmaker: card.bookmaker,
+          confidence: card.confidence, tier: card.tier.name, stake: card.stake,
+          scoring_factors: card.scoring.factors, scoring_weights: card.scoring.weights,
+          scoring_score: card.confidence, category: card.tier.name, reasoning: card.analysis,
+          channel: "paper", status: "pending", sent_at: new Date().toISOString(),
+          method_eligible: card.confidence >= METHOD_MIN_CONFIDENCE,
+          game_time: card.game_time, event_id: card.game_id,
           ...parseBetFields(card.pick, card.game),
           ...settlementFields(card.sport_key, card.game_time),
-          edge_percentage: card.scoring.breakdown.odds_value ?? null,
-          pick_hash: chain.pick_hash,
-          tx_hash: chain.tx_hash,
+          pick_hash: chain.pick_hash, tx_hash: chain.tx_hash,
           block_number: chain.block_number,
           block_timestamp: chain.block_timestamp?.toISOString() ?? null,
           verified: chain.verified,
-        }).select("id").single();
-
-        // Record bet in bankroll
-        if (row?.id) {
-          await recordBet(supabase, row.id, card.stake);
-        }
-
-        picksSent++;
-      } catch (err) {
-        console.log(`   VIP send failed: ${(err as Error).message}`);
+        });
+        console.log(`   📝 PAPER: ${card.tier.emoji} ${card.sport} ${card.game}`);
+        continue;
       }
-    }
-  }
 
-  // Free channel: send ALL foundation picks (full card) + one VALUE pick (stripped)
-  const liveCards = finalCards.filter((c) => !isPaperSport(c));
-
-  // Send foundation picks to free channel (full format — they're the hook)
-  const foundationCards = liveCards.filter((c) => c.tier.name === "FOUNDATION");
-  for (const card of foundationCards) {
-    try {
+      // Blockchain timestamp before sending
       const chain = await blockchainTimestamp(card);
-      const html = appendChainBadge(card.telegram_html, chain, card.game_time);
-      const msgId = await sendTelegramHtml(html, telegramBotToken, telegramChannelId);
-      console.log(`   📤 FREE (FOUNDATION): 🛡️ ${card.sport} ${card.game} → msg:${msgId}`);
-      postedFree++;
-    } catch (err) {
-      console.log(`   FREE foundation send failed: ${(err as Error).message}`);
-    }
-  }
 
-  // Send one VALUE pick to free channel (stripped format)
-  const freeCard = liveCards.find((c) => c.tier.name === "VALUE") ?? liveCards.find((c) => c.tier.name !== "FOUNDATION");
-  if (freeCard) {
-    const freeChain = await blockchainTimestamp(freeCard);
-    const freeHtml = appendChainBadge(buildFreeCardHtml(freeCard, finalCards.length), freeChain, freeCard.game_time);
-    try {
-      const msgId = await sendTelegramHtml(freeHtml, telegramBotToken, telegramChannelId);
-      console.log(`   📤 FREE: ${freeCard.tier.emoji} ${freeCard.sport} ${freeCard.game} → msg:${msgId}`);
-      postedFree++;
-
-      // Log free pick if no VIP channel
-      if (!vipChannelId) {
-        const { data: row } = await supabase.from("picks").insert({
-          sport: freeCard.sport, sport_key: freeCard.sport_key, league: freeCard.league,
-          game: freeCard.game, pick: freeCard.pick, odds: freeCard.odds, bookmaker: freeCard.bookmaker,
-          confidence: freeCard.confidence, tier: freeCard.tier.name,
-          stake: freeCard.stake, scoring_factors: freeCard.scoring.factors, scoring_weights: freeCard.scoring.weights,
-          scoring_score: freeCard.confidence, category: freeCard.tier.name, reasoning: freeCard.analysis,
-          telegram_message_id: msgId, channel: "free", status: "pending",
-          sent_at: new Date().toISOString(), game_time: freeCard.game_time, event_id: freeCard.game_id,
-          ...parseBetFields(freeCard.pick, freeCard.game),
-          ...settlementFields(freeCard.sport_key, freeCard.game_time),
-          pick_hash: freeChain.pick_hash, tx_hash: freeChain.tx_hash,
-          block_number: freeChain.block_number,
-          block_timestamp: freeChain.block_timestamp?.toISOString() ?? null,
-          verified: freeChain.verified,
-        }).select("id").single();
-
-        if (row?.id) {
-          await recordBet(supabase, row.id, freeCard.stake);
-        }
+      // Send to VIP channel
+      const vipHtml = appendChainBadge(formatVip(card), chain, card.game_time);
+      if (vipChannelId) {
+        const msgId = await sendTelegramHtml(vipHtml, telegramBotToken, vipChannelId);
+        console.log(`   📤 VIP: ${card.tier.emoji} ${card.sport} ${card.game} → msg:${msgId}`);
+        postedVip++;
       }
+
+      // Determine channel value for database
+      const goesToFree = freePickIds.has(card.game_id);
+      const goesToMethod = methodChannelId && methodPickIds.has(card.game_id);
+      let channel = "vip";
+      if (goesToFree && goesToMethod) channel = "all";
+      else if (goesToFree) channel = "both"; // both = free + vip
+      else if (goesToMethod) channel = "vip+method";
+
+      // Insert ONE row into picks table
+      const { data: row } = await supabase.from("picks").insert({
+        sport: card.sport, sport_key: card.sport_key, league: card.league,
+        game: card.game, pick: card.pick, odds: card.odds, bookmaker: card.bookmaker,
+        confidence: card.confidence, tier: card.tier.name, stake: card.stake,
+        scoring_factors: card.scoring.factors, scoring_weights: card.scoring.weights,
+        scoring_score: card.confidence, category: card.tier.name, reasoning: card.analysis,
+        channel, status: "pending", sent_at: new Date().toISOString(),
+        method_eligible: card.confidence >= METHOD_MIN_CONFIDENCE || card.tier.name === "FOUNDATION",
+        game_time: card.game_time, event_id: card.game_id,
+        ...parseBetFields(card.pick, card.game),
+        ...settlementFields(card.sport_key, card.game_time),
+        edge_percentage: card.scoring.breakdown.odds_value ?? null,
+        pick_hash: chain.pick_hash, tx_hash: chain.tx_hash,
+        block_number: chain.block_number,
+        block_timestamp: chain.block_timestamp?.toISOString() ?? null,
+        verified: chain.verified,
+      }).select("id").single();
+
+      if (row?.id) {
+        await recordBet(supabase, row.id, card.stake);
+      }
+
       picksSent++;
     } catch (err) {
-      console.log(`   FREE send failed: ${(err as Error).message}`);
+      console.log(`   Pick send/insert failed: ${(err as Error).message}`);
     }
   }
 
-  // Send MAX teasers to free channel for MAXIMUM picks
-  for (const card of finalCards.filter((c) => c.tier.name === "MAXIMUM")) {
-    try {
-      const teaser = `🚨 <b>MAX PLAY</b> just dropped for ${card.sport} subscribers.\n🦈 Unlock → sharkline.ai`;
-      await sendTelegramHtml(teaser, telegramBotToken, telegramChannelId);
-      console.log(`   🚨 MAX teaser sent for ${card.sport}`);
-    } catch (err) {
-      console.log(`   MAX teaser failed: ${(err as Error).message}`);
+  // ── Step 2: Send to FREE channel ──
+  if (telegramChannelId) {
+    for (const card of liveCards) {
+      if (!freePickIds.has(card.game_id)) continue;
+      try {
+        const chain = await blockchainTimestamp(card);
+        const html = appendChainBadge(formatFree(card), chain, card.game_time);
+        const msgId = await sendTelegramHtml(html, telegramBotToken, telegramChannelId);
+        console.log(`   📤 FREE: ${card.tier.emoji} ${card.sport} ${card.game} → msg:${msgId}`);
+        postedFree++;
+      } catch (err) {
+        console.log(`   FREE send failed: ${(err as Error).message}`);
+      }
+    }
+
+    // MAX teasers to free channel
+    for (const card of liveCards.filter((c) => c.tier.name === "MAXIMUM" && !freePickIds.has(c.game_id))) {
+      try {
+        const teaser = `🚨 <b>MAX PLAY</b> just dropped for ${card.sport} subscribers.\n🦈 Unlock → sharkline.ai`;
+        await sendTelegramHtml(teaser, telegramBotToken, telegramChannelId);
+      } catch { /* non-critical */ }
+    }
+  }
+
+  // ── Step 3: Send to METHOD channel ──
+  if (methodChannelId) {
+    const methodCards = liveCards.filter((c) => methodPickIds.has(c.game_id));
+    if (methodCards.length > 0) {
+      for (const card of methodCards) {
+        try {
+          todayExposedUnits += card.stake;
+          const chain = await blockchainTimestamp(card);
+          const html = appendChainBadge(
+            formatMethod(card, currentBankroll, todayExposedUnits),
+            chain,
+            card.game_time,
+          );
+          const msgId = await sendTelegramHtml(html, telegramBotToken, methodChannelId);
+          console.log(`   📤 METHOD: ${card.tier.emoji} ${card.sport} ${card.game} → msg:${msgId}`);
+          postedMethod++;
+        } catch (err) {
+          console.log(`   METHOD send failed: ${(err as Error).message}`);
+        }
+      }
+    } else {
+      // No picks qualify for Method today
+      try {
+        await sendTelegramHtml(
+          `🦈 No edge today. The Method protects your bankroll by sitting out weak days. Back tomorrow.`,
+          telegramBotToken,
+          methodChannelId,
+        );
+        console.log(`   📤 METHOD: No edge message sent`);
+      } catch (err) {
+        console.log(`   METHOD no-edge msg failed: ${(err as Error).message}`);
+      }
     }
   }
 
@@ -807,6 +839,7 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
       picks_sent: picksSent,
       posted_vip: postedVip,
       posted_free: postedFree,
+      posted_method: postedMethod,
       skipped_duplicates: skippedDuplicates + skippedCrossRunDupes,
       skipped_low_confidence: skippedLowConfidence,
       tiers: {
@@ -825,6 +858,7 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
     picksSent,
     postedVip,
     postedFree,
+    postedMethod,
     skippedDuplicates: skippedDuplicates + skippedCrossRunDupes,
     skippedLowConfidence,
     skippedExposure,
@@ -849,22 +883,66 @@ async function sendTelegramHtml(html: string, botToken: string, chatId: string):
   return String(data.result.message_id);
 }
 
-function buildFreeCardHtml(card: AnalysisCard, _totalVipPicks: number): string {
-  const sportEmoji: Record<string, string> = {
-    basketball_nba: "🏀",
-    soccer_epl: "⚽", soccer_spain_la_liga: "⚽", soccer_uefa_champs_league: "⚽",
-    soccer_italy_serie_a: "⚽", soccer_germany_bundesliga: "⚽",
-    soccer_france_ligue_one: "⚽", soccer_usa_mls: "⚽",
-    icehockey_nhl: "🏒", americanfootball_nfl: "🏈", baseball_mlb: "⚾",
-  };
-  const emoji = sportEmoji[card.sport_key] ?? "🏅";
+// ─── Format Functions (per channel) ───
 
-  // Stripped down — pick only, no analysis, no data, no blockchain
-  let html = `${emoji} ${card.sport} | ${card.league}\n`;
+const SPORT_EMOJI: Record<string, string> = {
+  basketball_nba: "🏀",
+  soccer_epl: "⚽", soccer_spain_la_liga: "⚽", soccer_uefa_champs_league: "⚽",
+  soccer_italy_serie_a: "⚽", soccer_germany_bundesliga: "⚽",
+  soccer_france_ligue_one: "⚽", soccer_usa_mls: "⚽",
+  icehockey_nhl: "🏒", americanfootball_nfl: "🏈", baseball_mlb: "⚾",
+  mma_mixed_martial_arts: "🥊",
+};
+
+function getSportEmoji(sportKey: string): string {
+  return SPORT_EMOJI[sportKey] ?? "🏅";
+}
+
+function formatFree(card: AnalysisCard): string {
+  let html = `🦈 <b>FREE PICK</b>\n`;
   html += `${card.game}\n`;
-  html += `Pick: <b>${card.pick}</b> @ ${card.odds}\n\n`;
-  html += `🔐 Full analysis + blockchain proof → VIP only\n`;
-  html += `Join VIP: sharkline.ai`;
+  html += `Pick: <b>${card.pick}</b> at ${card.odds}\n\n`;
+  html += `Want full analysis + more picks? → sharkline.ai\n`;
+  html += `🦈 Sharkline — on-chain before kickoff`;
+  return html;
+}
 
+function formatVip(card: AnalysisCard): string {
+  const emoji = getSportEmoji(card.sport_key);
+  let html = "";
+  if (card.tier.name === "MAXIMUM") html += "🚨 <b>MAX CONFIDENCE PLAY</b> 🚨\n";
+  if (card.tier.name === "FOUNDATION") html += "🛡️ <b>FOUNDATION PICK</b>\n";
+  html += `🦈 <b>VIP PICK</b>\n`;
+  html += `━━━━━━━━━━━━━━━━━━━━━━\n`;
+  html += `${emoji} ${card.sport} — ${card.league}\n`;
+  html += `${card.game}\n`;
+  html += `Pick: <b>${card.pick}</b> at ${card.odds}\n`;
+  html += `Tier: <b>${card.tier.name}</b>\n`;
+  html += `Confidence: ${card.confidence}%\n\n`;
+  html += `Analysis: ${card.analysis}\n`;
+  html += `🦈 Sharkline — on-chain before kickoff`;
+  return html;
+}
+
+function formatMethod(card: AnalysisCard, bankroll: number, exposedToday: number): string {
+  const emoji = getSportEmoji(card.sport_key);
+  const exposureWarning = exposedToday >= 6
+    ? `\n⚠️ Exposure limit reached — no more picks today`
+    : "";
+
+  let html = "";
+  if (card.tier.name === "FOUNDATION") html += "🛡️ <b>FOUNDATION PICK</b>\n";
+  html += `🦈 <b>SHARK METHOD</b>\n`;
+  html += `━━━━━━━━━━━━━━━━━━━━━━\n`;
+  html += `${emoji} ${card.sport} — ${card.league}\n`;
+  html += `${card.game}\n`;
+  html += `Pick: <b>${card.pick}</b> at ${card.odds}\n`;
+  html += `Tier: <b>${card.tier.name}</b>\n\n`;
+  html += `📊 <b>STAKE:</b> ${card.stake}u (${card.tier.name} sizing)\n`;
+  html += `💰 Bankroll: ${bankroll.toFixed(1)}u | Exposed today: ${exposedToday.toFixed(1)}/6u\n\n`;
+  html += `Analysis: ${card.analysis}\n`;
+  html += `━━━━━━━━━━━━━━━━━━━━━━\n`;
+  html += `Rules reminder: Max 6u daily exposure.${exposureWarning}\n`;
+  html += `🦈 Sharkline — on-chain before kickoff`;
   return html;
 }
