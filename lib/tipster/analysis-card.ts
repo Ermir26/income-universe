@@ -259,8 +259,6 @@ export async function generateCandidates(
 
   // Process all games — no artificial cap
   const selectedGames = games;
-  const sportKey = selectedGames[0]?.sport_key ?? '';
-  const league = getLeagueName(sportKey);
 
   // Build odds text for all games
   const gamesBlock = selectedGames.map((g, i) => {
@@ -283,12 +281,17 @@ export async function generateCandidates(
 
   const pickTypeInstruction = pickTypeHint === "foundation"
     ? `PICK TYPE: FOUNDATION 🛡️
-Include at least 1-2 FOUNDATION picks — these are heavy favorites (moneyline -200 to -350 range) where one team has a clear, data-backed edge.
-Foundation picks should be the safest bets of the day. Mark them with "pickType": "foundation".
-- Only select where you assess >75% win probability.
-- Target heavy favorites, dominant form, or lopsided matchups.
-- Odds should be in the -200 to -350 range (moneyline favorites only).
-- The goal is WINNING, not ROI. Safe plays that pad the record.`
+You are ONLY looking for FOUNDATION picks. These are HEAVY FAVORITES where the moneyline is between -200 and -350.
+
+CRITICAL FOUNDATION RULES:
+- The pick MUST be a moneyline favorite between -200 and -350.
+- DO NOT pick spreads, totals, or underdogs for foundation. Moneyline favorites ONLY.
+- Set "pickType": "foundation" for ALL picks in this batch.
+- Set confidence between 70-85 for these (they are safe plays, rate them honestly).
+- Rate form_factor and situational highly (75+) when the favorite has dominant recent form.
+- The goal is WINNING, not ROI. Safe plays that pad the record.
+- Look for: dominant home teams, teams on 4+ win streaks, lopsided matchups, teams fighting for playoffs vs eliminated opponents.
+- If a game has no favorite between -200 and -350, skip that game entirely.`
     : `PICK TYPE: VALUE 💎
 You are selecting VALUE picks. Value picks target analytical edges where odds are mispriced.
 - Find genuine value — where the true probability exceeds what the odds imply.
@@ -352,7 +355,7 @@ ${gamesBlock}
 INSTRUCTIONS
 ═══════════════════════════════════════
 
-Generate up to ${candidateCount} candidate picks across ALL ${selectedGames.length} games. Be AGGRESSIVE with volume — if ${selectedGames.length} games have clear edges, recommend picks for all of them. Multiple picks per game allowed (moneyline + total).
+Generate up to ${candidateCount} candidate picks across ALL ${selectedGames.length} games. Be AGGRESSIVE with volume — if ${selectedGames.length} games have clear edges, recommend picks for all of them. ONE pick per game maximum — choose the single best bet type for each game.
 
 For each pick, your reasoning MUST reference at least 4-5 of the 17 dimensions above with CONCRETE details from the research data. No vague analysis — cite specific records, injury names, standings positions, form streaks.
 
@@ -384,7 +387,7 @@ Return ONLY a JSON array (no markdown, no explanation):
 
 RULES:
 - Use REAL odds from the games above. Pick the best value line.
-- You may suggest multiple picks from the same game (e.g., moneyline + total).
+- ONE pick per game only. Choose the single strongest bet type.
 - Reject odds worse than +200 (low hit rate).
 - odds_value: how much value vs implied probability (80+ = great value)
 - form_factor: recent form of the picked team/player (80+ = hot streak)
@@ -512,13 +515,24 @@ RULES:
     allScored.push({ cand, game, scoring, effectivePickType, tier, passedFilter, filterReason });
   }
 
+  // Deduplicate: one pick per game (keep highest confidence)
+  const bestByGame = new Map<string, ScoredCandidate>();
+  for (const s of allScored) {
+    const gameId = s.game.id;
+    const existing = bestByGame.get(gameId);
+    if (!existing || s.scoring.confidence > existing.scoring.confidence) {
+      bestByGame.set(gameId, s);
+    }
+  }
+  const dedupedScored = [...bestByGame.values()];
+
   // Determine which candidates to use
-  let selectedCandidates = allScored.filter((s) => s.passedFilter);
+  let selectedCandidates = dedupedScored.filter((s) => s.passedFilter);
 
   // Zero-pick fallback: if nothing passed, take top 2 by confidence regardless
-  if (selectedCandidates.length === 0 && allScored.length > 0) {
+  if (selectedCandidates.length === 0 && dedupedScored.length > 0) {
     console.log(`   ⚠️ ZERO-PICK FALLBACK: No candidates passed filter. Taking top 2 by confidence.`);
-    const sorted = [...allScored].sort((a, b) => b.scoring.confidence - a.scoring.confidence);
+    const sorted = [...dedupedScored].sort((a, b) => b.scoring.confidence - a.scoring.confidence);
     selectedCandidates = sorted.slice(0, 2).map((s) => {
       // Force a VALUE tier for fallback picks
       const fallbackTier = s.tier ?? { name: "VALUE" as const, emoji: "✅", stake: 1, color: "#22c55e" };
@@ -532,6 +546,9 @@ RULES:
 
   for (const { cand, game, scoring, effectivePickType, tier } of selectedCandidates) {
     if (!tier) continue;
+
+    // Per-game league name from sport_key (NOT global)
+    const gameLeague = getLeagueName(game.sport_key);
 
     // Build stats line
     const statParts: string[] = [];
@@ -559,7 +576,7 @@ RULES:
 
     html += `🦈 <b>SHARK METHOD</b> — <b>${pickTypeBadge}</b>\n`;
     html += `━━━━━━━━━━━━━━━━━━━━━━\n`;
-    html += `${emoji} <b>${league}</b>\n`;
+    html += `${emoji} <b>${gameLeague}</b>\n`;
     html += `${game.home_team} vs ${game.away_team} — ${gameTime}\n\n`;
     html += `🎯 <b>Pick:</b> ${cand.pick}\n`;
     html += `📊 <b>Odds:</b> ${cand.odds} (${cand.bookmaker})\n`;
@@ -584,9 +601,9 @@ RULES:
     html += `🦈 Sharkline — sharkline.ai #SharkMethod`;
 
     cards.push({
-      sport: league,
+      sport: gameLeague,
       sport_key: game.sport_key,
-      league,
+      league: gameLeague,
       game: `${game.home_team} vs ${game.away_team}`,
       game_id: game.id,
       game_time: game.commence_time,
