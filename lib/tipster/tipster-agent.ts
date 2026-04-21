@@ -14,6 +14,11 @@ import { getEstimatedDurationMinutes, SETTLEMENT_GRACE_MINUTES, SPORT_KEY_TO_ESP
 /** Parse pick string into structured bet fields */
 function parseBetFields(pickStr: string, game: string): { bet_type: string; line: number | null; side: string } {
   const trimmed = pickStr.trim();
+  // F5 (First 5 Innings) totals — e.g. "F5 Over 4.5", "F5 Under 5.0"
+  const f5Match = trimmed.match(/^F5\s+(Over|Under)\s+([\d.]+)$/i);
+  if (f5Match) {
+    return { bet_type: "f5_total", line: parseFloat(f5Match[2]), side: f5Match[1].toLowerCase() };
+  }
   const ouMatch = trimmed.match(/^(Over|Under)\s+([\d.]+)$/i);
   if (ouMatch) {
     return { bet_type: "total", line: parseFloat(ouMatch[2]), side: ouMatch[1].toLowerCase() };
