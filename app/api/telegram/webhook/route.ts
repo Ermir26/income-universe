@@ -588,6 +588,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true });
   }
 
+  // Only respond to private messages (DMs), ignore group/channel messages
+  if (message.chat.type !== "private") {
+    return NextResponse.json({ ok: true });
+  }
+
   const chatId = message.chat.id;
   const userId = message.from.id;
   const text = message.text.trim();
@@ -616,7 +621,7 @@ export async function POST(request: Request) {
 
   // Route commands
   try {
-    if (text === "/start") {
+    if (text === "/start" || text === "/help") {
       await handleStart(chatId, tier);
     } else if (text === "/today") {
       await handleToday(chatId, tier, supabase);
