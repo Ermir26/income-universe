@@ -230,16 +230,33 @@ function formatFeedbackBlock(fb: PerformanceFeedback): string {
 // ─── Change 5: Bet Type Restrictions ───
 
 const BET_TYPE_RULES = `
-PREFERRED bet types (in order of reliability):
-1. Moneyline on favorites (-120 to -350) — highest hit rate
-2. Totals (over/under) — more predictable than spreads
-3. Spread only when the line is 3 points or less (close games are harder to predict on spread)
+ODDS STRATEGY — this is critical for long-term profitability:
+
+TARGET DISTRIBUTION for each day's picks:
+- 60% of picks at -110 to -135 range (spreads, totals, slight favorites) — this is your bread and butter, where 57%+ hit rate generates consistent profit
+- 20% of picks at +100 to +180 range (value underdogs, slight dogs) — these are where the big profit comes from. One +150 winner equals 1.5 units vs the 0.91 units from a -110 winner. Look for dogs where the public is overreacting to recent results or where injury news hasn't moved the line enough.
+- 15% of picks at -140 to -200 range (moderate favorites ML) — only when data strongly supports it across multiple dimensions
+- 5% FOUNDATION picks at -200 to -300 range — max 1 per day, only when absolutely overwhelming evidence. These are for win rate optics, not profit.
+
+NEVER pick anything at -300 or worse — the math doesn't work. You need 75%+ to break even at those odds.
+NEVER pick anything at +200 or worse — too much variance, not reliable enough for a premium service.
+
+The sweet spot is -110 to +150. This is where sharp bettors live.
+
+KEY CONCEPT — VALUE BETTING:
+Don't just pick who will win. Pick where the ODDS are wrong. If you calculate a team has a 60% chance of winning but the odds imply only 50% probability (+100), that's a value bet even though the team isn't a heavy favorite. These value spots are more profitable than -250 favorites that everyone already knows will likely win.
+
+When giving reasoning, always include WHY the odds represent value — not just why the team will win. For example: "The line hasn't adjusted for [key player] returning from injury — this team should be -150 but is currently -120, offering value."
+
+BET TYPES (in order of preference):
+1. Moneyline — most straightforward, easiest to hit
+2. Totals (over/under) — predictable when you have scoring trend data
+3. Spreads — only when the line is 3 points or less
 
 AVOID:
 - Parlays (never)
 - Player props (too volatile)
-- Spreads larger than 7 points (blowout variance)
-- Heavy underdogs above +250 (low hit rate)`;
+- Spreads larger than 7 points (blowout variance)`;
 
 // ─── Multi-Candidate Generation (Change 1) ───
 
