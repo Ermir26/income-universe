@@ -600,65 +600,102 @@ async function handleSharpest(
 // ── Webhook handler ──
 
 export async function POST(request: Request) {
-  const body = await request.json();
-  const message = body.message;
+  let body: Record<string, unknown>;
+  try {
+    body = await request.json();
+  } catch {
+    console.error("[webhook] Failed to parse request body");
+    return NextResponse.json({ ok: true });
+  }
+
+  console.log("[webhook] Incoming update:", JSON.stringify(body).slice(0, 500));
+
+  const message = body.message as Record<string, unknown> | undefined;
   if (!message?.text || !message.from) {
+    console.log("[webhook] No text or from field — skipping");
     return NextResponse.json({ ok: true });
   }
 
+  const chat = message.chat as Record<string, unknown>;
   // Only respond to private messages (DMs), ignore group/channel messages
-  if (message.chat.type !== "private") {
+  if (chat.type !== "private") {
+    console.log(`[webhook] Ignoring non-private chat type: ${chat.type}`);
     return NextResponse.json({ ok: true });
   }
 
-  const chatId = message.chat.id;
-  const userId = message.from.id;
-  const text = message.text.trim();
+  const chatId = chat.id as number;
+  const from = message.from as Record<string, unknown>;
+  const userId = from.id as number;
+  const text = (message.text as string).trim();
+
+  console.log(`[webhook] Private message from ${userId}: "${text}"`);
+
+  // Quick env check
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    console.error("[webhook] Missing SUPABASE env vars");
+    await sendMessage(chatId, `🦈 Bot is misconfigured. Contact admin.\n🦈`);
+    return NextResponse.json({ ok: true });
+  }
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-  // Detect tier
-  const tier = await detectTier(userId, supabase);
+  // Detect tier — wrap in try/catch so Supabase errors don't kill the handler
+  let tier: UserTier = "free";
+  try {
+    tier = await detectTier(userId, supabase);
+    console.log(`[webhook] Tier for ${userId}: ${tier}`);
+  } catch (err) {
+    console.error("[webhook] Tier detection failed:", err);
+    // Default to free tier if detection fails
+  }
 
   // Rate limit
-  const { allowed, remaining } = await checkRateLimit(supabase, userId, tier);
-  if (!allowed) {
-    const limit = RATE_LIMITS[tier];
-    const cta =
-      tier === "free"
-        ? "Upgrade to VIP for 20 messages/day → sharkline.ai"
-        : tier === "vip"
-          ? "Upgrade to Method for unlimited → sharkline.ai"
-          : "";
-    await sendMessage(
-      chatId,
-      `🦈 You've used your ${limit} messages today. ${cta}`,
-    );
-    return NextResponse.json({ ok: true });
+  try {
+    const { allowed } = await checkRateLimit(supabase, userId, tier);
+    if (!allowed) {
+      const limit = RATE_LIMITS[tier];
+      const cta =
+        tier === "free"
+          ? "Upgrade to VIP for 20 messages/day → sharkline.ai"
+          : tier === "vip"
+            ? "Upgrade to Method for unlimited → sharkline.ai"
+            : "";
+      await sendMessage(
+        chatId,
+        `🦈 You've used your ${limit} messages today. ${cta}`,
+      );
+      return NextResponse.json({ ok: true });
+    }
+  } catch (err) {
+    console.error("[webhook] Rate limit check failed:", err);
+    // Continue anyway — better to respond than to silently fail
   }
+
+  // Strip @BotUsername suffix from commands (Telegram sends /start@SharklineBot)
+  const cmd = text.split("@")[0].toLowerCase();
 
   // Route commands
   try {
-    if (text === "/start" || text === "/help") {
+    if (cmd === "/start" || cmd === "/help") {
       await handleStart(chatId, tier);
-    } else if (text === "/today") {
+    } else if (cmd === "/today") {
       await handleToday(chatId, tier, supabase);
-    } else if (text.startsWith("/ask")) {
-      const query = text.replace("/ask", "").trim();
+    } else if (cmd.startsWith("/ask")) {
+      const query = text.replace(/^\/ask(@\S+)?\s*/i, "").trim();
       await handleAsk(chatId, tier, query, supabase, userId);
-    } else if (text === "/record") {
+    } else if (cmd === "/record") {
       await handleRecord(chatId, tier, supabase);
-    } else if (text.startsWith("/bankroll")) {
-      const amount = text.replace("/bankroll", "").trim();
+    } else if (cmd.startsWith("/bankroll")) {
+      const amount = text.replace(/^\/bankroll(@\S+)?\s*/i, "").trim();
       await handleBankroll(chatId, tier, amount, supabase, userId);
-    } else if (text === "/pnl") {
+    } else if (cmd === "/pnl") {
       await handlePnl(chatId, tier, supabase, userId);
-    } else if (text === "/exposure") {
+    } else if (cmd === "/exposure") {
       await handleExposure(chatId, tier, supabase);
-    } else if (text.startsWith("/why")) {
-      const query = text.replace("/why", "").trim();
+    } else if (cmd.startsWith("/why")) {
+      const query = text.replace(/^\/why(@\S+)?\s*/i, "").trim();
       await handleWhy(chatId, tier, query, supabase);
-    } else if (text === "/sharpest") {
+    } else if (cmd === "/sharpest") {
       await handleSharpest(chatId, tier, supabase);
     } else {
       // Free text — detect if sports-related
@@ -670,8 +707,10 @@ export async function POST(request: Request) {
       }
     }
   } catch (err) {
-    console.error("Bot error:", err);
-    await sendMessage(chatId, `🦈 Something went wrong. Try again.\n🦈`);
+    console.error("[webhook] Command handler error:", err);
+    try {
+      await sendMessage(chatId, `🦈 Something went wrong. Try again.\n🦈`);
+    } catch { /* don't let error response crash us */ }
   }
 
   return NextResponse.json({ ok: true });
