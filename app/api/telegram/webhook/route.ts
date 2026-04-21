@@ -255,6 +255,24 @@ async function handleAsk(
       .eq("telegram_user_id", String(userId))
       .single();
 
+    // Reset used_ask_the_shark on Monday (new week)
+    const dayOfWeek = now.getUTCDay();
+    if (dayOfWeek === 1 && usage?.used_ask_the_shark) {
+      await supabase.from("bot_usage").update({ used_ask_the_shark: false })
+        .eq("telegram_user_id", String(userId));
+      // Refresh usage for this check
+      if (usage) usage.used_ask_the_shark = false;
+    }
+
+    if (isAskTheSharkWindow && usage?.used_ask_the_shark) {
+      // Already used their Ask the Shark this week
+      await sendMessage(
+        chatId,
+        `🦈 You've used your Ask the Shark for this week. Every day could be like this → sharkline.ai`,
+      );
+      return;
+    }
+
     if (isAskTheSharkWindow && !usage?.used_ask_the_shark) {
       // Give them ONE VIP-quality analysis
       await supabase.from("bot_usage").upsert(

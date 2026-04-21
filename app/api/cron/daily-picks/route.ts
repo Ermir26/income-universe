@@ -177,12 +177,55 @@ export async function GET(request: Request) {
         mode: 'recovery', triggered_at: new Date().toISOString(), reason: `Yesterday P/L: ${yesterdayPnl.toFixed(1)}u`,
       }).eq('id', 1);
       await log(supabase, 'recovery_mode_entered', { yesterdayPnl });
-    } else if (yesterdayPnl > 0 && currentMode === 'recovery') {
-      // Exit recovery mode
-      await supabase.from('system_status').update({
-        mode: 'standard', triggered_at: new Date().toISOString(), reason: `Recovery complete. Yesterday P/L: +${yesterdayPnl.toFixed(1)}u`,
-      }).eq('id', 1);
-      await log(supabase, 'recovery_mode_exited', { yesterdayPnl });
+
+      // Notify Method channel
+      if (METHOD_CHANNEL_ID && TELEGRAM_BOT_TOKEN) {
+        await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: METHOD_CHANNEL_ID,
+            text: `⚡ <b>RECOVERY MODE ACTIVE</b>\nYesterday: ${yesterdayPnl.toFixed(1)}u\nToday: tighter selection, safer plays.\nThe method protects your bankroll.\n🦈 Sharkline`,
+            parse_mode: 'HTML',
+          }),
+        }).catch(() => {});
+      }
+    } else if (yesterdayPnl >= 0 && currentMode === 'recovery') {
+      // Check for 2 consecutive positive days before exiting recovery
+      const twoDaysAgo = new Date();
+      twoDaysAgo.setUTCDate(twoDaysAgo.getUTCDate() - 2);
+      twoDaysAgo.setUTCHours(0, 0, 0, 0);
+
+      const { data: twoDayAgoPicks } = await supabase.from('picks')
+        .select('profit')
+        .gte('settled_at', twoDaysAgo.toISOString())
+        .lt('settled_at', yesterday.toISOString())
+        .in('result', ['won', 'lost', 'push']);
+
+      const twoDayAgoPnl = (twoDayAgoPicks ?? []).reduce((s, p) => s + (parseFloat(p.profit) || 0), 0);
+
+      if (twoDayAgoPnl >= 0 || yesterdayPnl > 0) {
+        // Exit recovery: either 2 consecutive positive days, or a strong positive day
+        await supabase.from('system_status').update({
+          mode: 'standard', triggered_at: new Date().toISOString(), reason: `Recovery complete. Yesterday P/L: +${yesterdayPnl.toFixed(1)}u`,
+        }).eq('id', 1);
+        await log(supabase, 'recovery_mode_exited', { yesterdayPnl, twoDayAgoPnl });
+
+        // Notify Method channel
+        if (METHOD_CHANNEL_ID && TELEGRAM_BOT_TOKEN) {
+          await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: METHOD_CHANNEL_ID,
+              text: `✅ <b>RECOVERY COMPLETE</b>\nYesterday: +${yesterdayPnl.toFixed(1)}u\nSystem returning to standard mode.\n🦈 Sharkline`,
+              parse_mode: 'HTML',
+            }),
+          }).catch(() => {});
+        }
+      } else {
+        await log(supabase, 'recovery_mode_continuing', { yesterdayPnl, twoDayAgoPnl, reason: 'Need 2 consecutive positive days' });
+      }
     }
 
     // ── System status — streak & win-rate based safety ──

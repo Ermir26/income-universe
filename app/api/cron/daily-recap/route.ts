@@ -117,11 +117,16 @@ export async function GET(request: Request) {
   const monthWagered = (monthPicks ?? []).reduce((s, p) => s + (parseFloat(p.stake) || 1), 0);
   const monthROI = monthWagered > 0 ? +((monthProfit / monthWagered) * 100).toFixed(1) : 0;
 
-  // System status
+  // System status — check both per-sport status and global recovery mode
   const systemStatus = await getSystemStatus(supabase);
   const hasPaused = systemStatus.some((s) => s.status === 'paused');
   const hasCaution = systemStatus.some((s) => s.status === 'caution');
-  const methodBadge = hasPaused ? '🔴 Paused' : hasCaution ? '🟡 Caution' : '🟢 Active';
+
+  // Check global recovery mode from system_status table
+  const { data: sysMode } = await supabase.from('system_status').select('mode').eq('id', 1).single();
+  const isRecovery = sysMode?.mode === 'recovery';
+
+  const methodBadge = isRecovery ? '⚡ Recovery' : hasPaused ? '🔴 Paused' : hasCaution ? '🟡 Caution' : '🟢 Standard';
 
   // Format date
   const now = new Date();

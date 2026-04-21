@@ -57,6 +57,10 @@ function gradePick(pick: StructuredPick, result: GameResult): 'won' | 'lost' | '
       if (side === 'over') return total > line ? 'won' : total < line ? 'lost' : 'push';
       return total < line ? 'won' : total > line ? 'lost' : 'push';
     }
+    case 'f5_total': {
+      // F5 totals can't be auto-graded from final scores — need manual review
+      return null;
+    }
     default:
       return null;
   }
@@ -64,6 +68,7 @@ function gradePick(pick: StructuredPick, result: GameResult): 'won' | 'lost' | '
 
 // Legacy fallbacks for picks that don't have structured fields yet
 function inferBetType(pickStr: string): string {
+  if (/^F5\s+(over|under)\s/i.test(pickStr)) return 'f5_total';
   if (/^(over|under)\s/i.test(pickStr)) return 'total';
   if (pickStr.toLowerCase() === 'draw') return 'draw';
   // Only real spreads have small numbers (< 20); larger = American odds = moneyline
@@ -73,6 +78,8 @@ function inferBetType(pickStr: string): string {
 }
 
 function inferLine(pickStr: string): number | null {
+  const f5Match = pickStr.match(/^F5\s+(?:Over|Under)\s+([\d.]+)$/i);
+  if (f5Match) return parseFloat(f5Match[1]);
   const ouMatch = pickStr.match(/^(?:Over|Under)\s+([\d.]+)$/i);
   if (ouMatch) return parseFloat(ouMatch[1]);
   const spreadMatch = pickStr.match(/\s([+-][\d.]+)$/);
@@ -82,6 +89,8 @@ function inferLine(pickStr: string): number | null {
 
 function inferSide(pick: StructuredPick): string {
   const pickStr = pick.pick;
+  if (/^F5\s+over\s/i.test(pickStr)) return 'over';
+  if (/^F5\s+under\s/i.test(pickStr)) return 'under';
   if (/^over\s/i.test(pickStr)) return 'over';
   if (/^under\s/i.test(pickStr)) return 'under';
   if (pickStr.toLowerCase() === 'draw') return 'draw';
@@ -521,7 +530,9 @@ export async function GET(request: Request) {
       }
     }
 
-    if (alertStreakDir === 'win' && alertStreak >= 5) {
+    // Only send streak alerts at 5, 7, and 10 wins — not on every win
+    const STREAK_ALERT_THRESHOLDS = [5, 7, 10];
+    if (alertStreakDir === 'win' && STREAK_ALERT_THRESHOLDS.includes(alertStreak)) {
       const { data: streakProfits } = await supabase.from('picks')
         .select('profit').eq('result', 'won')
         .order('settled_at', { ascending: false }).limit(alertStreak);
@@ -529,19 +540,19 @@ export async function GET(request: Request) {
 
       if (FREE_CHANNEL_ID) {
         await sendTelegram(
-          `🦈 ${alertStreak} WINS STRAIGHT 🔥\nThe system is locked in.\nThese wins are on VIP edge picks → sharkline.ai`,
+          `🔥 <b>${alertStreak} WINS STRAIGHT</b>\nThe Shark is feeding.\nThese wins are on VIP edge plays → sharkline.ai\n🦈 Sharkline`,
           FREE_CHANNEL_ID,
         );
       }
       if (VIP_CHANNEL_ID) {
         await sendTelegram(
-          `🦈 ${alertStreak} WINS STRAIGHT 🔥\nThe system is locked in.\nCurrent streak: W${alertStreak}. Keep tailing.\n🦈 Sharkline`,
+          `🔥 <b>${alertStreak} WINS STRAIGHT</b>\nCurrent streak: W${alertStreak}\nKeep tailing. The edge is real.\n🦈 Sharkline`,
           VIP_CHANNEL_ID,
         );
       }
       if (METHOD_CHANNEL_ID) {
         await sendTelegram(
-          `🦈 ${alertStreak} WINS STRAIGHT 🔥\nStreak: W${alertStreak} | Bankroll impact: +${streakImpact.toFixed(1)}u\n🦈 #SharkMethod`,
+          `🔥 <b>${alertStreak} WINS STRAIGHT</b>\nStreak: W${alertStreak} | Bankroll impact: +${streakImpact.toFixed(1)}u\nSystem: 🟢 Locked in.\n🦈 Sharkline`,
           METHOD_CHANNEL_ID,
         );
       }
