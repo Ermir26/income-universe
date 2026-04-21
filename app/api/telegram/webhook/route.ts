@@ -4,11 +4,18 @@
 
 import { NextResponse } from "next/server";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import Anthropic from "@anthropic-ai/sdk";
-import { buildResearchPackets, formatResearchForPrompt } from "@/lib/sports-data/research";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnySupabase = SupabaseClient<any, any, any>;
+
+// Lazy-load heavy deps to avoid serverless bundling issues at import time
+async function getAnthropic() {
+  const { default: Anthropic } = await import("@anthropic-ai/sdk");
+  return Anthropic;
+}
+async function getResearch() {
+  return await import("@/lib/sports-data/research");
+}
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
@@ -281,9 +288,11 @@ async function handleAsk(
       );
 
       const sportKeys = ["basketball_nba", "soccer_epl", "icehockey_nhl", "baseball_mlb"];
+      const { buildResearchPackets, formatResearchForPrompt } = await getResearch();
       const research = await buildResearchPackets(sportKeys);
       const researchText = formatResearchForPrompt(research);
 
+      const Anthropic = await getAnthropic();
       const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
       const response = await client.messages.create({
         model: "claude-sonnet-4-20250514",
@@ -308,6 +317,7 @@ Give a FULL VIP-quality analysis (3-5 sentences) including specific pick, odds, 
       );
     } else {
       // Standard bar-talk opinion
+      const Anthropic = await getAnthropic();
       const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
       const response = await client.messages.create({
         model: "claude-sonnet-4-20250514",
@@ -329,9 +339,11 @@ Never use "I think" — use "the data shows" or "our model has".`,
   } else {
     // VIP/Method: full analysis with Claude + research
     const sportKeys = ["basketball_nba", "soccer_epl", "icehockey_nhl", "baseball_mlb"];
+    const { buildResearchPackets, formatResearchForPrompt } = await getResearch();
     const research = await buildResearchPackets(sportKeys);
     const researchText = formatResearchForPrompt(research);
 
+    const Anthropic = await getAnthropic();
     const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
     const response = await client.messages.create({
       model: "claude-sonnet-4-20250514",
@@ -532,6 +544,7 @@ async function handleWhy(
     return;
   }
 
+  const Anthropic = await getAnthropic();
   const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
   const response = await client.messages.create({
     model: "claude-sonnet-4-20250514",
