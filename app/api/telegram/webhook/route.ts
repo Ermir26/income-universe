@@ -597,6 +597,18 @@ async function handleSharpest(
   await sendMessage(chatId, msg);
 }
 
+// ── Health check (GET) — for browser testing ──
+
+export async function GET() {
+  return NextResponse.json({
+    status: "webhook endpoint alive",
+    bot_token_set: !!TELEGRAM_BOT_TOKEN,
+    supabase_url_set: !!SUPABASE_URL,
+    anthropic_key_set: !!ANTHROPIC_API_KEY,
+    timestamp: new Date().toISOString(),
+  });
+}
+
 // ── Webhook handler ──
 
 export async function POST(request: Request) {
