@@ -42,6 +42,7 @@ export interface GameData {
 }
 
 export type PickType = "foundation" | "value";
+export type PickPool = "safe" | "edge";
 
 export interface AnalysisCard {
   sport: string;
@@ -54,6 +55,7 @@ export interface AnalysisCard {
   odds: string;
   bookmaker: string;
   pickType: PickType;
+  pool: PickPool;
   confidence: number;
   tier: Tier;
   stake: number;
@@ -61,6 +63,8 @@ export interface AnalysisCard {
   analysis: string;
   stats_line: string;
   telegram_html: string;
+  is_sharpest: boolean;
+  is_underdog_alert: boolean;
 }
 
 interface ClaudeCandidate {
@@ -69,11 +73,14 @@ interface ClaudeCandidate {
   odds: string;
   bookmaker: string;
   pickType: string;
+  pool: string;
   confidence: number;
   analysis: string;
   form_summary: string;
   h2h_summary: string;
   line_movement: string;
+  sharpest?: boolean;
+  is_underdog_alert?: boolean;
   factors: ScoringFactors;
 }
 
@@ -251,7 +258,8 @@ When giving reasoning, always include WHY the odds represent value — not just 
 BET TYPES (in order of preference):
 1. Moneyline — most straightforward, easiest to hit
 2. Totals (over/under) — predictable when you have scoring trend data
-3. Spreads — only when the line is 3 points or less
+3. F5 Totals (MLB only) — First 5 innings over/under, isolates starting pitchers
+4. Spreads — only when the line is 3 points or less
 
 AVOID:
 - Parlays (never)
@@ -297,24 +305,41 @@ export async function generateCandidates(
     : "";
 
   const pickTypeInstruction = pickTypeHint === "foundation"
-    ? `PICK TYPE: FOUNDATION 🛡️
-You are ONLY looking for FOUNDATION picks. These are HEAVY FAVORITES where the moneyline is between -200 and -350.
+    ? `PICK TYPE: SAFE (Foundation) 🛡️
+You are generating SAFE PICKS for the free channel. These are HEAVY FAVORITES where the moneyline is between -200 and -350.
 
-CRITICAL FOUNDATION RULES:
+CRITICAL SAFE PICK RULES:
 - The pick MUST be a moneyline favorite between -200 and -350.
-- DO NOT pick spreads, totals, or underdogs for foundation. Moneyline favorites ONLY.
-- Set "pickType": "foundation" for ALL picks in this batch.
+- DO NOT pick spreads, totals, or underdogs. Moneyline favorites ONLY.
+- Set "pickType": "foundation" and "pool": "safe" for ALL picks in this batch.
 - Set confidence between 70-85 for these (they are safe plays, rate them honestly).
 - Rate form_factor and situational highly (75+) when the favorite has dominant recent form.
-- The goal is WINNING, not ROI. Safe plays that pad the record.
+- The goal is WINNING, not ROI. Obvious winners that most fans would agree with.
+- These exist to prove the system works, not to make money.
+- Keep analysis to 1-2 sentences. No deep breakdown needed.
 - Look for: dominant home teams, teams on 4+ win streaks, lopsided matchups, teams fighting for playoffs vs eliminated opponents.
-- If a game has no favorite between -200 and -350, skip that game entirely.`
-    : `PICK TYPE: VALUE 💎
-You are selecting VALUE picks. Value picks target analytical edges where odds are mispriced.
-- Find genuine value — where the true probability exceeds what the odds imply.
-- Look for reverse line movement, CLV edges, sharp-vs-public divergence.
-- These picks should have a real analytical basis, not just gut feeling.
-- Mark with "pickType": "value".`;
+- If a game has no favorite between -200 and -350, skip that game entirely.
+- Generate 1-2 SAFE picks maximum.`
+    : `PICK TYPE: EDGE (Value) 💎
+You are generating EDGE PICKS for VIP/Method channels. These are picks where the odds are WRONG.
+
+EDGE PICK RULES:
+- Find games where the odds are mispriced. Value underdogs the public is sleeping on.
+- Totals where weather/tactical data points clearly one direction but the line hasn't adjusted.
+- Spreads where injury news or motivation mismatch creates a 3+ point edge.
+- These are picks that require deep 17-dimension analysis to find — the public wouldn't find these.
+- Set "pickType": "value" and "pool": "edge" for ALL picks in this batch.
+- Generate 4-8 EDGE picks.
+- Mark your single SHARPEST PLAY with "sharpest": true — the one pick where odds are most mispriced relative to true probability.
+
+UNDERDOG ALERT (optional, max 1):
+After generating your main edge picks, check if any underdog at +150 or higher has genuine value — meaning your calculated true probability is at least 15% higher than what the odds imply.
+If yes, include ONE extra pick with "is_underdog_alert": true and "pool": "edge".
+If none qualify, don't force it — skip the underdog alert.
+Underdog alerts are OPTIONAL high-risk plays, not part of the main system.
+
+ZERO OVERLAP RULE:
+Edge picks MUST use different games from safe/foundation picks when possible. If the same game appears in both pools, the edge pick must use a DIFFERENT bet type (e.g., safe = ML favorite, edge = the total or spread).`;
 
   const candidateCount = Math.max(10, selectedGames.length * 2);
 
@@ -357,6 +382,29 @@ For EVERY game, you MUST cross-reference these dimensions before making a pick:
 16. ODDS VALUE — True probability vs implied probability from odds. Where's the mispricing?
 17. EXTERNAL FACTORS — Crowd, travel bans, midweek European games, playoff implications.
 
+═══════════════════════════════════════
+MLB FIRST 5 INNINGS (F5) TOTALS
+═══════════════════════════════════════
+This is a premium market that isolates starting pitcher performance from bullpen variance. When analyzing MLB games, consider F5 totals as a PRIMARY bet type alongside moneyline and full-game totals.
+
+F5 ANALYSIS DIMENSIONS:
+- STARTER QUALITY: ERA, WHIP, K/9, innings pitched this season. Elite starters (ERA < 3.00) strongly favor unders.
+- PITCHER VS LINEUP: Historical stats of the starter against today's opposing lineup. Check batting average against, slugging against.
+- BULLPEN REMOVAL: F5 eliminates bullpen variance entirely. A dominant starter paired with a bad bullpen = F5 under is BETTER than full-game under.
+- PARK FACTORS: Some parks play very differently in early innings vs late (Coors Field, Yankee Stadium). Use park-adjusted metrics.
+- WEATHER EARLY: Wind and temperature affect ball carry. Morning/afternoon games differ from night games.
+- FIRST INNING TENDENCIES: Some pitchers are notoriously slow starters (high 1st inning ERA). Factor this into F5 overs.
+- LINEUP POSITION: The 1-5 hitters bat more in F5. Weight top-of-order quality more heavily than full lineup depth.
+
+F5 TOTALS RULES:
+- Only recommend F5 totals when BOTH starters have clear data (not a spot start or bullpen game).
+- F5 lines are typically 4.5 or 5.0. Target games where pitcher data strongly supports one direction.
+- F5 unders are preferred when both starters are elite (combined ERA < 6.00).
+- F5 overs work when both starters struggle early or face stacked lineups.
+- Format picks as "F5 Over 4.5" or "F5 Under 5.0" — always specify "F5" prefix.
+- Confidence for F5 picks should reflect pitcher sample size — lower confidence if either starter has < 30 IP this season.
+- Generate 1-3 F5 picks per day during MLB season when strong matchups exist. Don't force F5 picks if the data isn't there.
+
 ${BET_TYPE_RULES}
 
 ${pickTypeInstruction}
@@ -386,11 +434,14 @@ Return ONLY a JSON array (no markdown, no explanation):
     "odds": "-110",
     "bookmaker": "best bookmaker from the odds above",
     "pickType": "${pickTypeHint}",
+    "pool": "${pickTypeHint === "foundation" ? "safe" : "edge"}",
     "confidence": 72,
     "analysis": "4-6 sentences referencing at least 4 specific research dimensions. Cite actual data: records, injury names, form streaks, standings positions.",
     "form_summary": "W4" or "L2W3" etc,
     "h2h_summary": "3-1 this season" or "first meeting",
     "line_movement": "↑ opened +3.5 now +2.5" or "steady",
+    "sharpest": false,
+    "is_underdog_alert": false,
     "factors": {
       "odds_value": 72,
       "form_factor": 68,
@@ -615,7 +666,7 @@ RULES:
     } else {
       html += `Follow the method. Trust the process.\n`;
     }
-    html += `🦈 Sharkline — sharkline.ai #SharkMethod`;
+    html += `🦈 Sharkline — sharkline.ai`;
 
     cards.push({
       sport: gameLeague,
@@ -628,6 +679,7 @@ RULES:
       odds: cand.odds,
       bookmaker: cand.bookmaker,
       pickType: effectivePickType,
+      pool: (cand.pool === "safe" ? "safe" : "edge") as PickPool,
       confidence: scoring.confidence,
       tier,
       stake: tier.stake,
@@ -635,6 +687,8 @@ RULES:
       analysis: cand.analysis,
       stats_line: statsLine,
       telegram_html: html,
+      is_sharpest: cand.sharpest === true,
+      is_underdog_alert: cand.is_underdog_alert === true,
     });
   }
 
@@ -772,16 +826,20 @@ Be honest with ratings. Don't inflate.`,
   } else {
     html += `Follow the method. Trust the process.\n`;
   }
-  html += `🦈 Sharkline — sharkline.ai #SharkMethod`;
+  html += `🦈 Sharkline — sharkline.ai`;
 
   return {
     sport: league, sport_key: sportKey, league,
     game: `${game.home_team} vs ${game.away_team}`,
     game_id: game.id, game_time: game.commence_time,
     pick: parsed.pick, odds: parsed.odds, bookmaker: parsed.bookmaker,
-    pickType: effectivePickType, confidence: scoring.confidence,
+    pickType: effectivePickType,
+    pool: (effectivePickType === "foundation" ? "safe" : "edge") as PickPool,
+    confidence: scoring.confidence,
     tier, stake: tier.stake, scoring, analysis: parsed.analysis,
     stats_line: statsLine, telegram_html: html,
+    is_sharpest: false,
+    is_underdog_alert: false,
   };
 }
 

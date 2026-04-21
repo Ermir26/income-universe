@@ -191,14 +191,16 @@ export async function fetchUpcomingGames(
 
   console.log(`   Total games before filter: ${allGames.length}, cutoff: ${cutoff.toISOString()}`);
 
-  // Deduplicate and filter to upcoming only
+  // Deduplicate and filter to upcoming only (30-min buffer — no games starting within 30 minutes)
+  const BUFFER_MS = 30 * 60 * 1000;
+  const minStart = new Date(now.getTime() + BUFFER_MS);
   const seen = new Set<string>();
   return allGames
     .filter((g) => {
       if (seen.has(g.id)) return false;
       seen.add(g.id);
       const gameTime = new Date(g.commence_time);
-      return gameTime > now && gameTime < cutoff;
+      return gameTime > minStart && gameTime < cutoff;
     })
     .sort((a, b) => new Date(a.commence_time).getTime() - new Date(b.commence_time).getTime());
 }
@@ -624,6 +626,13 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
     }
   }
 
+  // 30-minute buffer — never send a pick for a game starting within 30 minutes
+  const SEND_BUFFER_MS = 30 * 60 * 1000;
+  function isGameTooSoon(gameTime: string): boolean {
+    const gt = new Date(gameTime);
+    return gt.getTime() - Date.now() < SEND_BUFFER_MS;
+  }
+
   // Append on-chain badge to Telegram HTML
   function appendChainBadge(html: string, chain: Awaited<ReturnType<typeof blockchainTimestamp>>, gameTime: string): string {
     if (!chain.tx_hash) return html;
@@ -647,23 +656,32 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
   finalCards.sort((a, b) => b.confidence - a.confidence);
   const liveCards = finalCards.filter((c) => !isPaperSport(c));
 
-  // Free channel: foundation picks + 1 highest-confidence pick
-  const freePickIds = new Set<string>();
-  for (const c of liveCards) {
-    if (c.tier.name === "FOUNDATION") freePickIds.add(c.game_id);
-  }
-  const topPick = liveCards.find((c) => !freePickIds.has(c.game_id));
-  if (topPick) freePickIds.add(topPick.game_id);
+  // Separate by pool
+  const safeCards = liveCards.filter((c) => c.pool === "safe");
+  const edgeCards = liveCards.filter((c) => c.pool === "edge" && !c.is_underdog_alert);
+  const underdogCard = liveCards.find((c) => c.is_underdog_alert);
 
-  // Method channel: confidence >= 70 (max 2) + foundation picks
+  // Free channel: all safe picks + 1 lowest-confidence edge (a taste)
+  const freePickIds = new Set<string>();
+  for (const c of safeCards) freePickIds.add(c.game_id);
+  // Give free users the lowest-confidence edge pick (a taste, not the best)
+  const edgeSortedAsc = [...edgeCards].sort((a, b) => a.confidence - b.confidence);
+  const edgeTeaser = edgeSortedAsc[0] ?? null;
+  if (edgeTeaser) freePickIds.add(edgeTeaser.game_id);
+
+  // VIP channel: ALL edge picks + underdog alert (no safe picks — those are free-only)
+  const vipPickIds = new Set<string>();
+  for (const c of edgeCards) vipPickIds.add(c.game_id);
+  if (underdogCard) vipPickIds.add(underdogCard.game_id);
+
+  // Method channel: edge picks with confidence >= 70 (max 3) + foundation/safe (NO underdog alerts)
   const METHOD_MIN_CONFIDENCE = 70;
   const METHOD_MAX_PICKS = 3;
   const methodPickIds = new Set<string>();
   let methodCount = 0;
-  for (const c of liveCards) {
-    if (c.tier.name === "FOUNDATION") {
-      methodPickIds.add(c.game_id);
-    } else if (c.confidence >= METHOD_MIN_CONFIDENCE && methodCount < METHOD_MAX_PICKS) {
+  for (const c of safeCards) methodPickIds.add(c.game_id);
+  for (const c of edgeCards) {
+    if (c.confidence >= METHOD_MIN_CONFIDENCE && methodCount < METHOD_MAX_PICKS) {
       methodPickIds.add(c.game_id);
       methodCount++;
     }
@@ -711,6 +729,9 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
           channel: "paper", status: "pending", sent_at: new Date().toISOString(),
           method_eligible: card.confidence >= METHOD_MIN_CONFIDENCE,
           game_time: card.game_time, event_id: card.game_id,
+          pool: card.pool,
+          is_sharpest: card.is_sharpest,
+          is_underdog_alert: card.is_underdog_alert,
           ...parseBetFields(card.pick, card.game),
           ...settlementFields(card.sport_key, card.game_time),
           pick_hash: chain.pick_hash, tx_hash: chain.tx_hash,
@@ -722,12 +743,19 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
         continue;
       }
 
+      // 30-minute time guard — skip if game starts too soon
+      if (isGameTooSoon(card.game_time)) {
+        console.log(`   ⏰ SKIPPED (game too soon): ${card.game} starts at ${card.game_time}`);
+        continue;
+      }
+
       // Blockchain timestamp before sending
       const chain = await blockchainTimestamp(card);
 
-      // Send to VIP channel
-      const vipHtml = appendChainBadge(formatVip(card), chain, card.game_time);
-      if (vipChannelId) {
+      // Send to VIP channel (only edge picks go to VIP)
+      if (vipChannelId && vipPickIds.has(card.game_id)) {
+        const vipFormatter = card.is_underdog_alert ? formatVipUnderdogAlert : formatVip;
+        const vipHtml = appendChainBadge(vipFormatter(card), chain, card.game_time);
         const msgId = await sendTelegramHtml(vipHtml, telegramBotToken, vipChannelId);
         console.log(`   📤 VIP: ${card.tier.emoji} ${card.sport} ${card.game} → msg:${msgId}`);
         postedVip++;
@@ -735,11 +763,13 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
 
       // Determine channel value for database
       const goesToFree = freePickIds.has(card.game_id);
+      const goesToVip = vipPickIds.has(card.game_id);
       const goesToMethod = methodChannelId && methodPickIds.has(card.game_id);
-      let channel = "vip";
-      if (goesToFree && goesToMethod) channel = "all";
-      else if (goesToFree) channel = "both"; // both = free + vip
-      else if (goesToMethod) channel = "vip+method";
+      let channel = goesToVip ? "vip" : "free";
+      if (goesToFree && goesToVip && goesToMethod) channel = "all";
+      else if (goesToFree && goesToVip) channel = "both";
+      else if (goesToVip && goesToMethod) channel = "vip+method";
+      else if (goesToFree) channel = "free";
 
       // Insert ONE row into picks table
       const { data: row } = await supabase.from("picks").insert({
@@ -751,6 +781,9 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
         channel, status: "pending", sent_at: new Date().toISOString(),
         method_eligible: card.confidence >= METHOD_MIN_CONFIDENCE || card.tier.name === "FOUNDATION",
         game_time: card.game_time, event_id: card.game_id,
+        pool: card.pool,
+        is_sharpest: card.is_sharpest,
+        is_underdog_alert: card.is_underdog_alert,
         ...parseBetFields(card.pick, card.game),
         ...settlementFields(card.sport_key, card.game_time),
         edge_percentage: card.scoring.breakdown.odds_value ?? null,
@@ -770,40 +803,54 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
     }
   }
 
-  // ── Step 2: Send to FREE channel ──
+  // ── Step 2: Send to FREE channel (batch format: foundation + 1 edge teaser) ──
   if (telegramChannelId) {
-    for (const card of liveCards) {
-      if (!freePickIds.has(card.game_id)) continue;
+    // Filter safe cards that aren't too soon
+    const freeSafe = safeCards.filter((c) => !isGameTooSoon(c.game_time));
+    const freeEdge = edgeTeaser && !isGameTooSoon(edgeTeaser.game_time) ? edgeTeaser : null;
+
+    if (freeSafe.length > 0 || freeEdge) {
       try {
-        const chain = await blockchainTimestamp(card);
-        const html = appendChainBadge(formatFree(card), chain, card.game_time);
+        const html = formatFreeBatch(freeSafe, freeEdge, edgeCards.length);
         const msgId = await sendTelegramHtml(html, telegramBotToken, telegramChannelId);
-        console.log(`   📤 FREE: ${card.tier.emoji} ${card.sport} ${card.game} → msg:${msgId}`);
-        postedFree++;
+        console.log(`   📤 FREE BATCH: ${freeSafe.length} safe + ${freeEdge ? 1 : 0} edge teaser → msg:${msgId}`);
+        postedFree = freeSafe.length + (freeEdge ? 1 : 0);
       } catch (err) {
-        console.log(`   FREE send failed: ${(err as Error).message}`);
+        console.log(`   FREE batch send failed: ${(err as Error).message}`);
       }
     }
 
-    // MAX teasers to free channel
-    for (const card of liveCards.filter((c) => c.tier.name === "MAXIMUM" && !freePickIds.has(c.game_id))) {
+    // MAX/sharpest play teaser
+    const sharpestCard = edgeCards.find((c) => c.is_sharpest);
+    if (sharpestCard && !freePickIds.has(sharpestCard.game_id)) {
       try {
-        const teaser = `🚨 <b>MAX PLAY</b> just dropped for ${card.sport} subscribers.\n🦈 VIP from $37/weekend | Shark Method from $67/weekend → sharkline.ai`;
+        const teaser = `🎯 <b>SHARPEST PLAY</b> just dropped for VIP subscribers.\nThe odds are wrong on this one.\n🦈 VIP from $37/weekend → sharkline.ai`;
         await sendTelegramHtml(teaser, telegramBotToken, telegramChannelId);
       } catch { /* non-critical */ }
     }
   }
 
-  // ── Step 3: Send to METHOD channel ──
+  // ── Step 3: Send to METHOD channel (no underdog alerts — controlled risk only) ──
   if (methodChannelId) {
-    const methodCards = liveCards.filter((c) => methodPickIds.has(c.game_id));
+    // Get system mode for recovery badge
+    let systemMode = "standard";
+    try {
+      const { data: sysStatus } = await supabase.from("system_status").select("mode").eq("id", 1).single();
+      if (sysStatus?.mode) systemMode = sysStatus.mode;
+    } catch { /* use default */ }
+
+    const methodCards = liveCards.filter((c) => methodPickIds.has(c.game_id) && !c.is_underdog_alert);
     if (methodCards.length > 0) {
       for (const card of methodCards) {
+        if (isGameTooSoon(card.game_time)) {
+          console.log(`   ⏰ METHOD SKIPPED (game too soon): ${card.game}`);
+          continue;
+        }
         try {
           todayExposedUnits += card.stake;
           const chain = await blockchainTimestamp(card);
           const html = appendChainBadge(
-            formatMethod(card, currentBankroll, todayExposedUnits),
+            formatMethod(card, currentBankroll, todayExposedUnits, systemMode),
             chain,
             card.game_time,
           );
@@ -818,7 +865,7 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
       // No picks qualify for Method today
       try {
         await sendTelegramHtml(
-          `🦈 No edge today. The Method protects your bankroll by sitting out weak days. Back tomorrow.`,
+          `⏳ No edge today. Sitting out IS the method. Bankroll protected.\n🦈 Sharkline — on-chain before kickoff`,
           telegramBotToken,
           methodChannelId,
         );
@@ -898,51 +945,121 @@ function getSportEmoji(sportKey: string): string {
   return SPORT_EMOJI[sportKey] ?? "🏅";
 }
 
+function formatFullDate(gameTime: string): string {
+  const dt = new Date(gameTime);
+  return dt.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+}
+
+function formatKickoffTime(gameTime: string): string {
+  const dt = new Date(gameTime);
+  const utc = dt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "UTC" }) + " UTC";
+  const est = dt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }) + " EST";
+  return `${utc} / ${est}`;
+}
+
+// ── FREE CHANNEL: minimal, teaser, conversion-focused ──
 function formatFree(card: AnalysisCard): string {
+  const emoji = getSportEmoji(card.sport_key);
   let html = `🦈 <b>FREE PICK</b>\n`;
+  html += `📅 ${formatFullDate(card.game_time)}\n\n`;
+  html += `${emoji} ${card.league}\n`;
   html += `${card.game}\n`;
-  html += `Pick: <b>${card.pick}</b> at ${card.odds}\n\n`;
-  html += `🦈 VIP from $37/weekend | Shark Method from $67/weekend → sharkline.ai\n`;
-  html += `🦈 Sharkline — on-chain before kickoff`;
+  html += `⏰ ${formatKickoffTime(card.game_time)}\n`;
+  html += `Pick: <b>${card.pick}</b> @ ${card.odds}\n\n`;
+  html += `Result posted after the game.\n`;
+  html += `🦈 Sharkline`;
   return html;
 }
 
+// Free channel daily batch (foundation + 1 edge taste)
+function formatFreeBatch(safeCards: AnalysisCard[], edgeTeaser: AnalysisCard | null, edgeCount: number): string {
+  const dateStr = safeCards.length > 0 ? formatFullDate(safeCards[0].game_time) : formatFullDate(new Date().toISOString());
+  let html = `🦈 <b>FREE PICKS</b> — ${dateStr}\n\n`;
+
+  for (const card of safeCards) {
+    html += `🛡️ <b>FOUNDATION</b>\n`;
+    html += `${card.game} — <b>${card.pick}</b> @ ${card.odds}\n\n`;
+  }
+
+  if (edgeTeaser) {
+    html += `⚡ <b>EDGE PLAY</b>\n`;
+    html += `${edgeTeaser.game}\n`;
+    html += `Pick: <b>${edgeTeaser.pick}</b> @ ${edgeTeaser.odds}\n`;
+    html += `${edgeTeaser.analysis.split('.')[0]}.\n\n`;
+  }
+
+  html += `VIP members got ${edgeCount} more edge plays today → sharkline.ai\n`;
+  html += `🦈 Sharkline`;
+  return html;
+}
+
+// ── VIP CHANNEL: full analysis, the sharp edge ──
 function formatVip(card: AnalysisCard): string {
   const emoji = getSportEmoji(card.sport_key);
   let html = "";
-  if (card.tier.name === "MAXIMUM") html += "🚨 <b>MAX CONFIDENCE PLAY</b> 🚨\n";
-  if (card.tier.name === "FOUNDATION") html += "🛡️ <b>FOUNDATION PICK</b>\n";
-  html += `🦈 <b>VIP PICK</b>\n`;
-  html += `━━━━━━━━━━━━━━━━━━━━━━\n`;
-  html += `${emoji} ${card.sport} — ${card.league}\n`;
+
+  if (card.is_sharpest) {
+    html += `🎯 <b>TODAY'S SHARPEST PLAY</b>\n`;
+  } else {
+    html += `🦈 <b>VIP EDGE PLAY</b>\n`;
+  }
+  html += `📅 ${formatFullDate(card.game_time)}\n\n`;
+  html += `${emoji} ${card.league}\n`;
   html += `${card.game}\n`;
-  html += `Pick: <b>${card.pick}</b> at ${card.odds}\n`;
-  html += `Tier: <b>${card.tier.name}</b>\n`;
-  html += `Confidence: ${card.confidence}%\n\n`;
-  html += `Analysis: ${card.analysis}\n`;
+  html += `⏰ ${formatKickoffTime(card.game_time)}\n`;
+  html += `Pick: <b>${card.pick}</b> @ ${card.odds}\n`;
+  html += `Confidence: ${card.confidence}%\n`;
+  html += `Tier: <b>${card.tier.name}</b>\n\n`;
+  html += `📊 <b>Analysis:</b>\n`;
+  html += `${card.analysis}\n\n`;
+  if (card.is_sharpest) {
+    html += `🔥 This is the one. Full conviction.\n`;
+  }
   html += `🦈 Sharkline — on-chain before kickoff`;
   return html;
 }
 
-function formatMethod(card: AnalysisCard, bankroll: number, exposedToday: number): string {
+// VIP underdog alert format
+function formatVipUnderdogAlert(card: AnalysisCard): string {
+  const emoji = getSportEmoji(card.sport_key);
+  let html = `🐕 <b>UNDERDOG ALERT — OPTIONAL</b>\n`;
+  html += `📅 ${formatFullDate(card.game_time)}\n\n`;
+  html += `${emoji} ${card.league}\n`;
+  html += `${card.game}\n`;
+  html += `⏰ ${formatKickoffTime(card.game_time)}\n`;
+  html += `Pick: <b>${card.pick}</b> @ ${card.odds}\n`;
+  html += `Confidence: ${card.confidence}%\n\n`;
+  html += `📊 <b>Why this dog has value:</b>\n`;
+  html += `${card.analysis}\n\n`;
+  html += `⚠️ OPTIONAL high-risk/high-reward play. Standard staking does NOT apply.\n`;
+  html += `Suggested: 0.5u max (half a normal unit)\n`;
+  html += `Only bet this if your bankroll can absorb the loss.\n`;
+  html += `🦈 Sharkline`;
+  return html;
+}
+
+// ── METHOD CHANNEL: the managed system ──
+function formatMethod(card: AnalysisCard, bankroll: number, exposedToday: number, systemMode?: string): string {
   const emoji = getSportEmoji(card.sport_key);
   const exposureWarning = exposedToday >= 6
     ? `\n⚠️ Exposure limit reached — no more picks today`
     : "";
 
-  let html = "";
-  if (card.tier.name === "FOUNDATION") html += "🛡️ <b>FOUNDATION PICK</b>\n";
-  html += `🦈 <b>SHARK METHOD</b>\n`;
-  html += `━━━━━━━━━━━━━━━━━━━━━━\n`;
-  html += `${emoji} ${card.sport} — ${card.league}\n`;
+  let html = `🦈 <b>SHARK METHOD</b>\n`;
+  html += `📅 ${formatFullDate(card.game_time)}\n\n`;
+  html += `${emoji} ${card.league}\n`;
   html += `${card.game}\n`;
-  html += `Pick: <b>${card.pick}</b> at ${card.odds}\n`;
+  html += `⏰ ${formatKickoffTime(card.game_time)}\n`;
+  html += `Pick: <b>${card.pick}</b> @ ${card.odds}\n`;
   html += `Tier: <b>${card.tier.name}</b>\n\n`;
-  html += `📊 <b>STAKE:</b> ${card.stake}u (${card.tier.name} sizing)\n`;
-  html += `💰 Bankroll: ${bankroll.toFixed(1)}u | Exposed today: ${exposedToday.toFixed(1)}/6u\n\n`;
-  html += `Analysis: ${card.analysis}\n`;
-  html += `━━━━━━━━━━━━━━━━━━━━━━\n`;
-  html += `Rules reminder: Max 6u daily exposure.${exposureWarning}\n`;
+  html += `📊 <b>STAKE:</b> ${card.stake}u\n`;
+  html += `💰 Bankroll: ${bankroll.toFixed(1)}u | Exposed: ${exposedToday.toFixed(1)}/6u\n\n`;
+  html += `<b>Analysis:</b>\n`;
+  html += `${card.analysis}\n`;
+  if (systemMode === "recovery") {
+    html += `\n⚡ Recovery mode — reduced stakes active\n`;
+  }
+  html += `${exposureWarning}\n`;
   html += `🦈 Sharkline — on-chain before kickoff`;
   return html;
 }

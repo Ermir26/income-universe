@@ -15,6 +15,10 @@
     {
       "path": "/api/cron/weekly-report",
       "schedule": "0 20 * * 0"
+    },
+    {
+      "path": "/api/cron/ask-the-shark",
+      "schedule": "0 14 * * 6"
     }
   ]
 }

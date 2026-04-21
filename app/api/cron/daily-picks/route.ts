@@ -22,7 +22,7 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? '';
 const VIP_CHANNEL_ID = process.env.TELEGRAM_VIP_CHANNEL_ID ?? process.env.VIP_CHANNEL_ID ?? '';
 const METHOD_CHANNEL_ID = process.env.TELEGRAM_METHOD_CHANNEL_ID ?? '';
 
-const MAX_PICKS_PER_DAY = 5;
+const MAX_PICKS_PER_DAY = 10; // 1-2 safe + 4-8 edge + 1 optional underdog
 
 export const maxDuration = 120;
 
@@ -150,6 +150,39 @@ export async function GET(request: Request) {
         skipped_low_confidence: 0, skipped_duplicates: 0,
         auto_paused: false, exposure_limit: true, errors: [],
       });
+    }
+
+    // ── System recovery mode check — adjust based on yesterday's P/L ──
+    const yesterday = new Date();
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    yesterday.setUTCHours(0, 0, 0, 0);
+    const todayMidnight = new Date();
+    todayMidnight.setUTCHours(0, 0, 0, 0);
+
+    const { data: yesterdayPicks } = await supabase.from('picks')
+      .select('profit')
+      .gte('settled_at', yesterday.toISOString())
+      .lt('settled_at', todayMidnight.toISOString())
+      .in('result', ['won', 'lost', 'push']);
+
+    const yesterdayPnl = (yesterdayPicks ?? []).reduce((s, p) => s + (parseFloat(p.profit) || 0), 0);
+
+    // Get current system mode
+    const { data: sysStatus } = await supabase.from('system_status').select('mode').eq('id', 1).single();
+    const currentMode = sysStatus?.mode ?? 'standard';
+
+    if (yesterdayPnl < 0 && currentMode === 'standard') {
+      // Enter recovery mode
+      await supabase.from('system_status').update({
+        mode: 'recovery', triggered_at: new Date().toISOString(), reason: `Yesterday P/L: ${yesterdayPnl.toFixed(1)}u`,
+      }).eq('id', 1);
+      await log(supabase, 'recovery_mode_entered', { yesterdayPnl });
+    } else if (yesterdayPnl > 0 && currentMode === 'recovery') {
+      // Exit recovery mode
+      await supabase.from('system_status').update({
+        mode: 'standard', triggered_at: new Date().toISOString(), reason: `Recovery complete. Yesterday P/L: +${yesterdayPnl.toFixed(1)}u`,
+      }).eq('id', 1);
+      await log(supabase, 'recovery_mode_exited', { yesterdayPnl });
     }
 
     // ── System status — streak & win-rate based safety ──

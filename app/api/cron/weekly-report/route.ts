@@ -10,6 +10,7 @@ const CRON_SECRET = process.env.CRON_SECRET ?? '';
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? '';
 const VIP_CHANNEL_ID = process.env.TELEGRAM_VIP_CHANNEL_ID ?? process.env.VIP_CHANNEL_ID ?? '';
 const FREE_CHANNEL_ID = process.env.TELEGRAM_CHANNEL_ID ?? '';
+const METHOD_CHANNEL_ID = process.env.TELEGRAM_METHOD_CHANNEL_ID ?? '';
 
 async function sendTelegram(text: string, chatId: string): Promise<void> {
   if (!TELEGRAM_BOT_TOKEN || !chatId) return;
@@ -111,8 +112,34 @@ export async function GET(request: Request) {
   const startOfYear = new Date(now.getUTCFullYear(), 0, 1);
   const weekNum = Math.ceil(((now.getTime() - startOfYear.getTime()) / 86400000 + startOfYear.getUTCDay() + 1) / 7);
 
-  // Build message
-  let msg =
+  // ── FREE channel: record + ROI only, CTA ──
+  const freeMsg =
+    `📈 <b>WEEKLY REPORT</b> — Week ${weekNum}\n` +
+    `Record: ${wins}W-${losses}L | ROI: ${roi}%\n\n` +
+    `🦈 Full breakdown + bankroll tracking → VIP from $37/wknd\n` +
+    `🦈 sharkline.ai`;
+
+  // ── VIP channel: record + units + sport breakdown ──
+  let vipMsg =
+    `📈 <b>WEEKLY REPORT</b> — Week ${weekNum}\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `Record: ${wins}W-${losses}L\n` +
+    `Units: ${netUnits >= 0 ? '+' : ''}${netUnits.toFixed(1)}u | ROI: ${roi}%\n\n`;
+
+  if (sportEntries.length > 1) {
+    const bs = bestSport[1];
+    const ws = worstSport[1];
+    vipMsg += `🏆 Best: ${bestSport[0]} (${bs.wins}W-${bs.losses}L, ${bs.profit >= 0 ? '+' : ''}${bs.profit.toFixed(1)}u)\n`;
+    vipMsg += `📉 Weakest: ${worstSport[0]} (${ws.wins}W-${ws.losses}L, ${ws.profit >= 0 ? '+' : ''}${ws.profit.toFixed(1)}u)\n`;
+  }
+  if (bestPick) {
+    vipMsg += `🔥 Pick of the week: ${bestPick.game} — ${bestPick.pick} at ${bestPick.odds} (+${parseFloat(bestPick.profit).toFixed(1)}u)\n`;
+  }
+  vipMsg += `\nMonth-to-date: ${monthProfit >= 0 ? '+' : ''}${monthProfit.toFixed(1)}u | ${monthROI}% ROI\n`;
+  vipMsg += `🦈 Sharkline — on-chain before kickoff`;
+
+  // ── METHOD channel: full report with balance + method status ──
+  let methodMsg =
     `📈 <b>SHARK METHOD — Week ${weekNum} Report</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━━━\n` +
     `Record: ${wins}W-${losses}L\n` +
@@ -122,22 +149,20 @@ export async function GET(request: Request) {
   if (sportEntries.length > 1) {
     const bs = bestSport[1];
     const ws = worstSport[1];
-    msg += `🏆 Best sport: ${bestSport[0]} (${bs.wins}W-${bs.losses}L, ${bs.profit >= 0 ? '+' : ''}${bs.profit.toFixed(1)}u)\n`;
-    msg += `📉 Weakest sport: ${worstSport[0]} (${ws.wins}W-${ws.losses}L, ${ws.profit >= 0 ? '+' : ''}${ws.profit.toFixed(1)}u)\n`;
+    methodMsg += `🏆 Best sport: ${bestSport[0]} (${bs.wins}W-${bs.losses}L, ${bs.profit >= 0 ? '+' : ''}${bs.profit.toFixed(1)}u)\n`;
+    methodMsg += `📉 Weakest sport: ${worstSport[0]} (${ws.wins}W-${ws.losses}L, ${ws.profit >= 0 ? '+' : ''}${ws.profit.toFixed(1)}u)\n`;
   }
-
   if (bestPick) {
-    msg += `🔥 Pick of the week: ${bestPick.game} — ${bestPick.pick} at ${bestPick.odds} (+${parseFloat(bestPick.profit).toFixed(1)}u)\n`;
+    methodMsg += `🔥 Pick of the week: ${bestPick.game} — ${bestPick.pick} at ${bestPick.odds} (+${parseFloat(bestPick.profit).toFixed(1)}u)\n`;
   }
+  methodMsg += `\nMonth-to-date: ${monthProfit >= 0 ? '+' : ''}${monthProfit.toFixed(1)}u | ${monthROI}% ROI\n\n`;
+  methodMsg += `Follow the method. Trust the process.\n`;
+  methodMsg += `🦈 #SharkMethod #WeeklyReport`;
 
-  msg += `\nMonth-to-date: ${monthProfit >= 0 ? '+' : ''}${monthProfit.toFixed(1)}u | ${monthROI}% ROI\n\n`;
-  msg += `Follow the method. Trust the process.\n`;
-  msg += `🦈 #SharkMethod #WeeklyReport`;
-
-  const channels = [VIP_CHANNEL_ID, FREE_CHANNEL_ID].filter(Boolean);
-  for (const chatId of channels) {
-    await sendTelegram(msg, chatId);
-  }
+  // Send to each channel
+  if (FREE_CHANNEL_ID) await sendTelegram(freeMsg, FREE_CHANNEL_ID);
+  if (VIP_CHANNEL_ID) await sendTelegram(vipMsg, VIP_CHANNEL_ID);
+  if (METHOD_CHANNEL_ID) await sendTelegram(methodMsg, METHOD_CHANNEL_ID);
 
   await supabase.from('agent_logs').insert({
     agent_name: 'weekly-report',

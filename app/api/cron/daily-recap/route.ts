@@ -11,6 +11,7 @@ const CRON_SECRET = process.env.CRON_SECRET ?? '';
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? '';
 const VIP_CHANNEL_ID = process.env.TELEGRAM_VIP_CHANNEL_ID ?? process.env.VIP_CHANNEL_ID ?? '';
 const FREE_CHANNEL_ID = process.env.TELEGRAM_CHANNEL_ID ?? '';
+const METHOD_CHANNEL_ID = process.env.TELEGRAM_METHOD_CHANNEL_ID ?? '';
 
 const WIN_TEMPLATES = [
   'Clean sweep. Method delivers.',
@@ -129,35 +130,81 @@ export async function GET(request: Request) {
   // Pick template deterministically (day-of-month modulo)
   const dayOfMonth = now.getUTCDate();
   const isWinDay = netUnits >= 0;
+  const template = isWinDay
+    ? WIN_TEMPLATES[dayOfMonth % WIN_TEMPLATES.length]
+    : LOSS_TEMPLATES[dayOfMonth % LOSS_TEMPLATES.length];
 
-  let msg: string;
-  if (isWinDay) {
-    const template = WIN_TEMPLATES[dayOfMonth % WIN_TEMPLATES.length];
-    msg =
-      `📊 <b>DAILY RECAP</b> — ${dateStr}\n` +
-      `━━━━━━━━━━━━━━━━━━━━━━\n` +
-      `Record: ${wins}W-${losses}L | Units: +${netUnits.toFixed(1)}u\n` +
-      `Balance: ${currentBalance.toFixed(1)}u | Streak: ${streakLabel}\n\n` +
-      `<i>${template}</i>\n\n` +
-      `Monthly P&L: ${monthProfit >= 0 ? '+' : ''}${monthProfit.toFixed(1)}u | ${monthROI}% ROI\n` +
-      `🦈 #SharkMethod #DailyRecap`;
-  } else {
-    const template = LOSS_TEMPLATES[dayOfMonth % LOSS_TEMPLATES.length];
-    msg =
-      `📊 <b>DAILY RECAP</b> — ${dateStr}\n` +
-      `━━━━━━━━━━━━━━━━━━━━━━\n` +
-      `Record: ${wins}W-${losses}L | Units: ${netUnits.toFixed(1)}u\n` +
-      `Balance: ${currentBalance.toFixed(1)}u\n\n` +
-      `<i>${template}</i>\n\n` +
-      `Method status: ${methodBadge} | Monthly P&L: ${monthProfit >= 0 ? '+' : ''}${monthProfit.toFixed(1)}u\n` +
-      `🦈 #SharkMethod #DailyRecap`;
-  }
+  // Get edge pick results for free channel teaser
+  const { data: edgePicks } = await supabase.from('picks')
+    .select('result, pool')
+    .gte('settled_at', todayStart.toISOString())
+    .eq('pool', 'edge')
+    .in('result', ['won', 'lost']);
 
-  // Post to both channels
-  const channels = [VIP_CHANNEL_ID, FREE_CHANNEL_ID].filter(Boolean);
-  for (const chatId of channels) {
-    await sendTelegram(msg, chatId);
-  }
+  const edgeWins = (edgePicks ?? []).filter((p) => p.result === 'won').length;
+  const edgeLosses = (edgePicks ?? []).filter((p) => p.result === 'lost').length;
+
+  // Get free pick result
+  const { data: freePicks } = await supabase.from('picks')
+    .select('result, pool')
+    .gte('settled_at', todayStart.toISOString())
+    .eq('pool', 'safe')
+    .in('result', ['won', 'lost']);
+
+  const freeResult = (freePicks ?? []).length > 0
+    ? `Free pick: ${freePicks!.filter((p) => p.result === 'won').length}W-${freePicks!.filter((p) => p.result === 'lost').length}L`
+    : 'Free pick: pending';
+
+  // ── FREE channel: minimal with VIP edge tease ──
+  const freeMsg =
+    `📊 <b>FREE RECAP</b> — ${dateStr}\n` +
+    `${freeResult}\n` +
+    (edgePicks && edgePicks.length > 0
+      ? `VIP edge picks: ${edgeWins}W-${edgeLosses}L (you missed these)\n`
+      : '') +
+    `→ sharkline.ai\n` +
+    `🦈 Sharkline`;
+
+  // ── VIP channel: full day report with best/worst ──
+  const { data: vipSettled } = await supabase.from('picks')
+    .select('game, pick, result, profit, pool')
+    .gte('settled_at', todayStart.toISOString())
+    .eq('pool', 'edge')
+    .in('result', ['won', 'lost']);
+
+  const bestPick = (vipSettled ?? []).filter((p) => p.result === 'won')
+    .sort((a, b) => (parseFloat(b.profit) || 0) - (parseFloat(a.profit) || 0))[0];
+  const worstPick = (vipSettled ?? []).filter((p) => p.result === 'lost')[0];
+
+  let vipMsg =
+    `📊 <b>VIP DAILY REPORT</b> — ${dateStr}\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `Record: ${wins}W-${losses}L\n` +
+    `Day P/L: ${netUnits >= 0 ? '+' : ''}${netUnits.toFixed(1)}u\n\n`;
+
+  if (bestPick) vipMsg += `Best: ✅ ${bestPick.game} — ${bestPick.pick}\n`;
+  if (worstPick) vipMsg += `Worst: ❌ ${worstPick.game} — ${worstPick.pick}\n`;
+
+  vipMsg += `\n${isWinDay ? '🟢 Edge found, edge hit.' : '🔴 Process was right, variance happens. The edge plays out over weeks.'}\n\n`;
+  vipMsg += `💎 Want exact staking + bankroll protection? → Shark Method\n`;
+  vipMsg += `🦈 Sharkline — on-chain before kickoff`;
+
+  // ── METHOD channel: full bankroll + balance + system status ──
+  const methodMsg =
+    `📊 <b>SHARK METHOD</b> — ${dateStr}\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `Record: ${wins}W-${losses}L\n` +
+    `Day P/L: ${netUnits >= 0 ? '+' : ''}${netUnits.toFixed(1)}u\n` +
+    `Bankroll: ${currentBalance.toFixed(1)}u\n` +
+    `Monthly: ${monthProfit >= 0 ? '+' : ''}${monthProfit.toFixed(1)}u\n` +
+    `System: ${methodBadge}\n\n` +
+    `<i>${template}</i>\n` +
+    `🦈 Sharkline — on-chain before kickoff`;
+
+  // Post to each channel with its own message
+  if (FREE_CHANNEL_ID) await sendTelegram(freeMsg, FREE_CHANNEL_ID);
+  if (VIP_CHANNEL_ID) await sendTelegram(vipMsg, VIP_CHANNEL_ID);
+  if (METHOD_CHANNEL_ID) await sendTelegram(methodMsg, METHOD_CHANNEL_ID);
 
   // Log
   await supabase.from('agent_logs').insert({

@@ -19,6 +19,11 @@ export interface TeamResearch {
   streak: string;
 }
 
+export interface ProbablePitcher {
+  name: string;
+  stats: string; // e.g. "3.25 ERA, 1.12 WHIP, 9.2 K/9"
+}
+
 export interface GameResearch {
   game: string;
   league: string;
@@ -29,6 +34,7 @@ export interface GameResearch {
   h2h: string;
   weather: string;
   contextNotes: string;
+  probablePitchers?: { home: ProbablePitcher | null; away: ProbablePitcher | null };
 }
 
 // ─── Cache ───
@@ -80,6 +86,11 @@ interface ESPNEvent {
       homeAway: string;
       team?: ESPNTeam;
       records?: Array<{ summary: string; type?: string }>;
+      probables?: Array<{
+        playerId: number;
+        athlete?: { displayName?: string; shortName?: string };
+        statistics?: Array<{ displayValue?: string; abbreviation?: string }>;
+      }>;
     }>;
   }>;
   status?: { type?: { description?: string; completed?: boolean } };
@@ -530,6 +541,24 @@ export async function buildResearchPackets(
       if (homeInjuries.length >= 3) notes.push(`${homeName} has ${homeInjuries.length} injuries`);
       if (awayInjuries.length >= 3) notes.push(`${awayName} has ${awayInjuries.length} injuries`);
 
+      // Extract probable pitchers for MLB games
+      let probablePitchers: { home: ProbablePitcher | null; away: ProbablePitcher | null } | undefined;
+      if (sportKey === "baseball_mlb") {
+        const extractPitcher = (competitor: typeof homeComp): ProbablePitcher | null => {
+          const probable = competitor?.probables?.[0];
+          if (!probable?.athlete?.displayName) return null;
+          const stats = (probable.statistics ?? [])
+            .map((s) => `${s.displayValue ?? ""} ${s.abbreviation ?? ""}`.trim())
+            .filter(Boolean)
+            .join(", ");
+          return { name: probable.athlete.displayName, stats: stats || "stats unavailable" };
+        };
+        probablePitchers = {
+          home: extractPitcher(homeComp),
+          away: extractPitcher(awayComp),
+        };
+      }
+
       packets.push({
         game: `${homeName} vs ${awayName}`,
         league: leagueName,
@@ -564,6 +593,7 @@ export async function buildResearchPackets(
         h2h: "", // ESPN doesn't have a clean h2h endpoint — Claude can reference from knowledge
         weather,
         contextNotes: notes.join(". ") || "",
+        probablePitchers,
       });
     }
   }
@@ -602,6 +632,20 @@ export function formatResearchForPrompt(packets: GameResearch[]): string {
     lines.push(`  Goals/game (last 5): ${p.awayTeam.recentGoalsScored} scored, ${p.awayTeam.recentGoalsConceded} conceded`);
     if (p.awayTeam.injuries.length > 0) {
       lines.push(`  🏥 Injuries: ${p.awayTeam.injuries.join("; ")}`);
+    }
+
+    // Probable pitchers (MLB)
+    if (p.probablePitchers) {
+      lines.push(`\n⚾ Probable Pitchers:`);
+      if (p.probablePitchers.away) {
+        lines.push(`  Away: ${p.probablePitchers.away.name} (${p.probablePitchers.away.stats})`);
+      }
+      if (p.probablePitchers.home) {
+        lines.push(`  Home: ${p.probablePitchers.home.name} (${p.probablePitchers.home.stats})`);
+      }
+      if (!p.probablePitchers.home && !p.probablePitchers.away) {
+        lines.push(`  TBD — use rotation knowledge to identify starters`);
+      }
     }
 
     if (p.h2h) lines.push(`\n🔄 H2H: ${p.h2h}`);
