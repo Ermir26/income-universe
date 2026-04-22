@@ -869,26 +869,28 @@ export async function POST(request: Request) {
     // Default to free tier if detection fails
   }
 
-  // Rate limit
-  try {
-    const { allowed } = await checkRateLimit(supabase, userId, tier);
-    if (!allowed) {
-      const limit = RATE_LIMITS[tier];
-      const cta =
-        tier === "free"
-          ? "Upgrade to VIP for 20 messages/day → sharkline.ai"
-          : tier === "vip"
-            ? "Upgrade to Method for unlimited → sharkline.ai"
-            : "";
-      await sendMessage(
-        chatId,
-        `🦈 You've used your ${limit} messages today. ${cta}`,
-      );
-      return NextResponse.json({ ok: true });
+  // Rate limit (admins bypass)
+  if (!isAdmin(userId)) {
+    try {
+      const { allowed } = await checkRateLimit(supabase, userId, tier);
+      if (!allowed) {
+        const limit = RATE_LIMITS[tier];
+        const cta =
+          tier === "free"
+            ? "Upgrade to VIP for 20 messages/day → sharkline.ai"
+            : tier === "vip"
+              ? "Upgrade to Method for unlimited → sharkline.ai"
+              : "";
+        await sendMessage(
+          chatId,
+          `🦈 You've used your ${limit} messages today. ${cta}`,
+        );
+        return NextResponse.json({ ok: true });
+      }
+    } catch (err) {
+      console.error("[webhook] Rate limit check failed:", err);
+      // Continue anyway — better to respond than to silently fail
     }
-  } catch (err) {
-    console.error("[webhook] Rate limit check failed:", err);
-    // Continue anyway — better to respond than to silently fail
   }
 
   // Strip @BotUsername suffix from commands (Telegram sends /start@SharklineBot)
