@@ -8,7 +8,6 @@
 //   4. Performance feedback loop: recent results steer picks
 //   5. Bet type restrictions: prefer moneyline/totals, avoid parlays/props/big spreads
 
-import Anthropic from "@anthropic-ai/sdk";
 import { type SupabaseClient } from "@supabase/supabase-js";
 import { getTier, formatTierBadge, getTierStakeStars, type Tier } from "./tiers";
 import { buildResearchPackets, formatResearchForPrompt } from "../sports-data/research";
@@ -280,6 +279,7 @@ export async function generateCandidates(
   supabase: SupabaseClient,
   todaysPicks?: { game: string; pick: string }[],
 ): Promise<AnalysisCard[]> {
+  const { default: Anthropic } = await import("@anthropic-ai/sdk");
   const client = new Anthropic({ apiKey });
 
   // Process all games — no artificial cap
@@ -716,6 +716,7 @@ export async function generateAnalysisCard(
   }
 
   // Fallback: minimal single-game generation without ESPN context or feedback
+  const { default: Anthropic } = await import("@anthropic-ai/sdk");
   const client = new Anthropic({ apiKey });
   const sportKey = game.sport_key;
   const league = getLeagueName(sportKey);
