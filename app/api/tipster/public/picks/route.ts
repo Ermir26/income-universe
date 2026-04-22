@@ -14,6 +14,7 @@ export async function GET(request: Request) {
     .from("picks")
     .select("id, sport, sport_key, league, game, pick, odds, bookmaker, tier, category, stake, confidence, scoring_factors, reasoning, result, profit, status, actual_result, settled_at, sent_at, game_time, tx_hash, verified")
     .not("result", "in", "(void,needs_manual_review)")
+    .not("status", "in", "(draft,rejected)")
     .order("sent_at", { ascending: false })
     .limit(100);
 

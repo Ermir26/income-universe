@@ -30,6 +30,7 @@ export async function GET() {
       .from("picks")
       .select("id, sport, sport_key, league, game, pick, odds, confidence, result, status, actual_result, game_time, sent_at, tier, stake, category, bookmaker, event_id")
       .gte("sent_at", weekAgo.toISOString())
+      .not("status", "in", "(draft,rejected)")
       .order("sent_at", { ascending: false });
 
     // ─── All settled picks (for stats) ───

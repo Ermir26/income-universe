@@ -718,8 +718,9 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
   }
 
   let postedMethod = 0;
+  const adminTelegramId = process.env.ADMIN_TELEGRAM_ID ?? "";
 
-  // ── Step 1: Insert picks into database + send to VIP ──
+  // ── Step 1: Insert picks as DRAFT + send to admin DM for approval ──
   for (const card of finalCards) {
     try {
       // Paper mode: log to Supabase but don't send to Telegram
@@ -754,17 +755,8 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
         continue;
       }
 
-      // Blockchain timestamp before sending
+      // Blockchain timestamp before saving
       const chain = await blockchainTimestamp(card);
-
-      // Send to VIP channel (only edge picks go to VIP)
-      if (vipChannelId && vipPickIds.has(card.game_id)) {
-        const vipFormatter = card.is_underdog_alert ? formatVipUnderdogAlert : formatVip;
-        const vipHtml = appendChainBadge(vipFormatter(card), chain, card.game_time);
-        const msgId = await sendTelegramHtml(vipHtml, telegramBotToken, vipChannelId);
-        console.log(`   📤 VIP: ${card.tier.emoji} ${card.sport} ${card.game} → msg:${msgId}`);
-        postedVip++;
-      }
 
       // Determine channel value for database
       const goesToFree = freePickIds.has(card.game_id);
@@ -776,14 +768,14 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
       else if (goesToVip && goesToMethod) channel = "vip+method";
       else if (goesToFree) channel = "free";
 
-      // Insert ONE row into picks table
+      // Insert as DRAFT — admin must approve before publishing
       const { data: row } = await supabase.from("picks").insert({
         sport: card.sport, sport_key: card.sport_key, league: card.league,
         game: card.game, pick: card.pick, odds: card.odds, bookmaker: card.bookmaker,
         confidence: card.confidence, tier: card.tier.name, stake: card.stake,
         scoring_factors: card.scoring.factors, scoring_weights: card.scoring.weights,
         scoring_score: card.confidence, category: card.tier.name, reasoning: card.analysis,
-        channel, status: "pending", sent_at: new Date().toISOString(),
+        channel, status: "draft", sent_at: new Date().toISOString(),
         method_eligible: card.confidence >= METHOD_MIN_CONFIDENCE || card.tier.name === "FOUNDATION",
         game_time: card.game_time, event_id: card.game_id,
         pool: card.pool,
@@ -802,83 +794,57 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
         await recordBet(supabase, row.id, card.stake);
       }
 
+      // Send draft to admin DM for approval
+      if (adminTelegramId && telegramBotToken && row?.id) {
+        const emoji = getSportEmoji(card.sport_key);
+        const gameTime = new Date(card.game_time);
+        const kickoff = formatKickoffTime(card.game_time);
+        const poolLabel = card.pool === "safe" ? "🛡️ SAFE" : "⚡ EDGE";
+        const sharpLabel = card.is_sharpest ? " | 🎯 SHARPEST" : "";
+        const underdogLabel = card.is_underdog_alert ? " | 🐕 UNDERDOG" : "";
+
+        const adminMsg =
+          `📋 <b>DRAFT #${row.id}</b>\n` +
+          `━━━━━━━━━━━━━━━━━━━━━━\n` +
+          `${emoji} ${card.league} | ${poolLabel}${sharpLabel}${underdogLabel}\n` +
+          `${card.game}\n` +
+          `⏰ ${kickoff}\n` +
+          `Pick: <b>${card.pick}</b> @ ${card.odds}\n` +
+          `Confidence: ${card.confidence}% | Tier: ${card.tier.name}\n` +
+          `Stake: ${card.stake}u\n\n` +
+          `📊 ${card.analysis}\n\n` +
+          `Channel: ${channel}\n\n` +
+          `✅ <code>approve ${row.id}</code>\n` +
+          `❌ <code>reject ${row.id}</code>\n` +
+          `✏️ <code>edit ${row.id} odds 1.95</code>`;
+
+        try {
+          await sendTelegramHtml(adminMsg, telegramBotToken, adminTelegramId);
+          console.log(`   📋 DRAFT #${row.id}: ${card.tier.emoji} ${card.sport} ${card.game} → admin DM`);
+        } catch (err) {
+          console.log(`   Admin DM failed for #${row.id}: ${(err as Error).message}`);
+        }
+      }
+
       picksSent++;
     } catch (err) {
-      console.log(`   Pick send/insert failed: ${(err as Error).message}`);
+      console.log(`   Pick insert failed: ${(err as Error).message}`);
     }
   }
 
-  // ── Step 2: Send to FREE channel (batch format: foundation + 1 edge teaser) ──
-  if (telegramChannelId) {
-    // Filter safe cards that aren't too soon
-    const freeSafe = safeCards.filter((c) => !isGameTooSoon(c.game_time));
-    const freeEdge = edgeTeaser && !isGameTooSoon(edgeTeaser.game_time) ? edgeTeaser : null;
-
-    if (freeSafe.length > 0 || freeEdge) {
-      try {
-        const html = formatFreeBatch(freeSafe, freeEdge, edgeCards.length);
-        const msgId = await sendTelegramHtml(html, telegramBotToken, telegramChannelId);
-        console.log(`   📤 FREE BATCH: ${freeSafe.length} safe + ${freeEdge ? 1 : 0} edge teaser → msg:${msgId}`);
-        postedFree = freeSafe.length + (freeEdge ? 1 : 0);
-      } catch (err) {
-        console.log(`   FREE batch send failed: ${(err as Error).message}`);
-      }
-    }
-
-    // MAX/sharpest play teaser
-    const sharpestCard = edgeCards.find((c) => c.is_sharpest);
-    if (sharpestCard && !freePickIds.has(sharpestCard.game_id)) {
-      try {
-        const teaser = `🎯 <b>SHARPEST PLAY</b> just dropped for VIP subscribers.\nThe odds are wrong on this one.\n🦈 VIP from $37/weekend → sharkline.ai`;
-        await sendTelegramHtml(teaser, telegramBotToken, telegramChannelId);
-      } catch { /* non-critical */ }
-    }
-  }
-
-  // ── Step 3: Send to METHOD channel (no underdog alerts — controlled risk only) ──
-  if (methodChannelId) {
-    // Get system mode for recovery badge
-    let systemMode = "standard";
+  // ── Send admin summary with bulk actions ──
+  if (adminTelegramId && telegramBotToken && picksSent > 0) {
     try {
-      const { data: sysStatus } = await supabase.from("system_status").select("mode").eq("id", 1).single();
-      if (sysStatus?.mode) systemMode = sysStatus.mode;
-    } catch { /* use default */ }
-
-    const methodCards = liveCards.filter((c) => methodPickIds.has(c.game_id) && !c.is_underdog_alert);
-    if (methodCards.length > 0) {
-      for (const card of methodCards) {
-        if (isGameTooSoon(card.game_time)) {
-          console.log(`   ⏰ METHOD SKIPPED (game too soon): ${card.game}`);
-          continue;
-        }
-        try {
-          todayExposedUnits += card.stake;
-          const chain = await blockchainTimestamp(card);
-          const html = appendChainBadge(
-            formatMethod(card, currentBankroll, todayExposedUnits, systemMode),
-            chain,
-            card.game_time,
-          );
-          const msgId = await sendTelegramHtml(html, telegramBotToken, methodChannelId);
-          console.log(`   📤 METHOD: ${card.tier.emoji} ${card.sport} ${card.game} → msg:${msgId}`);
-          postedMethod++;
-        } catch (err) {
-          console.log(`   METHOD send failed: ${(err as Error).message}`);
-        }
-      }
-    } else {
-      // No picks qualify for Method today
-      try {
-        await sendTelegramHtml(
-          `⏳ No edge today. Sitting out IS the method. Bankroll protected.\n🦈 Sharkline — on-chain before kickoff`,
-          telegramBotToken,
-          methodChannelId,
-        );
-        console.log(`   📤 METHOD: No edge message sent`);
-      } catch (err) {
-        console.log(`   METHOD no-edge msg failed: ${(err as Error).message}`);
-      }
-    }
+      const summary =
+        `📊 <b>${picksSent} DRAFTS READY</b>\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━\n` +
+        `Safe: ${safeCards.filter((c) => !isGameTooSoon(c.game_time)).length} | ` +
+        `Edge: ${edgeCards.filter((c) => !isGameTooSoon(c.game_time)).length}\n\n` +
+        `Bulk actions:\n` +
+        `✅ <code>approve all</code>\n` +
+        `❌ <code>reject all</code>`;
+      await sendTelegramHtml(summary, telegramBotToken, adminTelegramId);
+    } catch { /* non-critical */ }
   }
 
   // Log to agent_logs
@@ -933,6 +899,29 @@ async function sendTelegramHtml(html: string, botToken: string, chatId: string):
   const data = await res.json();
   if (!data.ok) throw new Error(data.description);
   return String(data.result.message_id);
+}
+
+// ─── Chain Badge (used by both runTipster and publishApprovedPick) ───
+
+interface ChainInfo {
+  pick_hash: string;
+  tx_hash: string | null;
+  block_number: number | null;
+  block_timestamp: Date | null;
+  verified: boolean;
+  polygonscan_url?: string | null;
+}
+
+function appendChainBadgeToHtml(html: string, chain: ChainInfo, gameTime: string): string {
+  if (!chain.tx_hash) return html;
+  const gameDate = new Date(gameTime);
+  const blockDate = chain.block_timestamp ?? new Date();
+  const minsBefore = Math.max(0, Math.round((gameDate.getTime() - blockDate.getTime()) / 60000));
+  const url = chain.polygonscan_url ?? (chain.tx_hash ? getPolygonScanUrl(chain.tx_hash) : "");
+  const badge = `\n🔗 Verified on-chain: ${url}\n⏱ Timestamped ${minsBefore} min before kickoff`;
+  const lines = html.split("\n");
+  const lastLine = lines.pop();
+  return lines.join("\n") + badge + "\n" + lastLine;
 }
 
 // ─── Format Functions (per channel) ───
@@ -1067,4 +1056,129 @@ function formatMethod(card: AnalysisCard, bankroll: number, exposedToday: number
   html += `${exposureWarning}\n`;
   html += `🦈 Sharkline — on-chain before kickoff`;
   return html;
+}
+
+// ─── Admin Approval: Publish a draft pick to public channels ───
+
+export async function publishApprovedPick(
+  pickId: number,
+  supabase: SupabaseClient,
+  adminId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
+  const VIP_CH = process.env.TELEGRAM_VIP_CHANNEL_ID ?? process.env.VIP_CHANNEL_ID ?? "";
+  const FREE_CH = process.env.TELEGRAM_CHANNEL_ID ?? "";
+  const METHOD_CH = process.env.TELEGRAM_METHOD_CHANNEL_ID ?? "";
+
+  const { data: pick, error } = await supabase
+    .from("picks")
+    .select("*")
+    .eq("id", pickId)
+    .eq("status", "draft")
+    .single();
+
+  if (error || !pick) {
+    return { ok: false, error: `Pick #${pickId} not found or not in draft status` };
+  }
+
+  // Check if game starts too soon (30 min guard)
+  if (pick.game_time) {
+    const gameTime = new Date(pick.game_time);
+    const minsUntil = (gameTime.getTime() - Date.now()) / 60000;
+    if (minsUntil < 30) {
+      return { ok: false, error: `Pick #${pickId}: game starts in ${Math.round(minsUntil)} min (too soon)` };
+    }
+  }
+
+  // Update status to pending + mark approved
+  await supabase.from("picks").update({
+    status: "pending",
+    approved_at: new Date().toISOString(),
+    approved_by: adminId,
+  }).eq("id", pickId);
+
+  // Build a card-like object from the pick row for formatting
+  const card = {
+    sport: pick.sport,
+    sport_key: pick.sport_key ?? "",
+    league: pick.league ?? "",
+    game: pick.game,
+    pick: pick.pick,
+    odds: pick.odds,
+    bookmaker: pick.bookmaker ?? "",
+    confidence: pick.confidence ?? 0,
+    tier: getTier(pick.confidence ?? 0),
+    stake: parseFloat(pick.stake) || 1,
+    analysis: pick.reasoning ?? "",
+    game_time: pick.game_time ?? new Date().toISOString(),
+    game_id: pick.event_id ?? "",
+    pool: pick.pool ?? "edge",
+    is_sharpest: pick.is_sharpest ?? false,
+    is_underdog_alert: pick.is_underdog_alert ?? false,
+    scoring: { factors: pick.scoring_factors ?? {}, weights: pick.scoring_weights ?? {}, breakdown: {} },
+  } as unknown as AnalysisCard;
+
+  const channel = pick.channel ?? "vip";
+  const chainInfo = {
+    pick_hash: pick.pick_hash ?? "",
+    tx_hash: pick.tx_hash ?? null,
+    block_number: pick.block_number ?? null,
+    block_timestamp: pick.block_timestamp ? new Date(pick.block_timestamp) : null,
+    verified: pick.verified ?? false,
+  };
+
+  // ── Publish to VIP channel ──
+  if (VIP_CH && BOT_TOKEN && ["vip", "both", "vip+method", "all"].includes(channel)) {
+    try {
+      const vipFormatter = card.is_underdog_alert ? formatVipUnderdogAlert : formatVip;
+      const vipHtml = appendChainBadgeToHtml(vipFormatter(card), chainInfo, card.game_time);
+      await sendTelegramHtml(vipHtml, BOT_TOKEN, VIP_CH);
+    } catch (err) {
+      console.log(`   VIP publish failed for #${pickId}: ${(err as Error).message}`);
+    }
+  }
+
+  // ── Publish to FREE channel ──
+  if (FREE_CH && BOT_TOKEN && ["free", "both", "all"].includes(channel)) {
+    try {
+      const freeHtml = formatFree(card);
+      await sendTelegramHtml(freeHtml, BOT_TOKEN, FREE_CH);
+    } catch (err) {
+      console.log(`   FREE publish failed for #${pickId}: ${(err as Error).message}`);
+    }
+  }
+
+  // ── Publish to METHOD channel ──
+  if (METHOD_CH && BOT_TOKEN && ["vip+method", "all"].includes(channel) && !card.is_underdog_alert) {
+    try {
+      let bankroll = 100;
+      let exposedToday = 0;
+      let systemMode = "standard";
+      try {
+        const { data: bData } = await supabase.from("bankroll_log").select("balance").order("created_at", { ascending: false }).limit(1).single();
+        if (bData?.balance) bankroll = parseFloat(bData.balance);
+      } catch { /* use default */ }
+      try {
+        const todayStart = new Date();
+        todayStart.setUTCHours(0, 0, 0, 0);
+        const { data: tPicks } = await supabase.from("picks").select("stake").gte("sent_at", todayStart.toISOString()).eq("status", "pending").neq("channel", "paper");
+        exposedToday = (tPicks ?? []).reduce((sum, p) => sum + (parseFloat(p.stake) || 0), 0);
+      } catch { /* use default */ }
+      try {
+        const { data: sysStatus } = await supabase.from("system_status").select("mode").eq("id", 1).single();
+        if (sysStatus?.mode) systemMode = sysStatus.mode;
+      } catch { /* use default */ }
+
+      const methodHtml = appendChainBadgeToHtml(
+        formatMethod(card, bankroll, exposedToday, systemMode),
+        chainInfo,
+        card.game_time,
+      );
+      await sendTelegramHtml(methodHtml, BOT_TOKEN, METHOD_CH);
+    } catch (err) {
+      console.log(`   METHOD publish failed for #${pickId}: ${(err as Error).message}`);
+    }
+  }
+
+  return { ok: true };
 }

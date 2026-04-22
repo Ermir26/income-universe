@@ -23,6 +23,7 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const VIP_CHANNEL_ID = process.env.TELEGRAM_VIP_CHANNEL_ID ?? "";
 const METHOD_CHANNEL_ID = process.env.TELEGRAM_METHOD_CHANNEL_ID ?? "-1003974071892";
+const ADMIN_TELEGRAM_ID = process.env.ADMIN_TELEGRAM_ID ?? "";
 
 type UserTier = "free" | "vip" | "method";
 
@@ -192,6 +193,7 @@ async function handleToday(
     .select("*")
     .gte("sent_at", todayStart.toISOString())
     .neq("channel", "paper")
+    .in("status", ["pending", "won", "lost", "push"])
     .order("confidence", { ascending: false });
 
   if (!picks || picks.length === 0) {
@@ -610,6 +612,199 @@ async function handleSharpest(
   await sendMessage(chatId, msg);
 }
 
+// ── Admin command handlers ──
+
+function isAdmin(userId: number): boolean {
+  return ADMIN_TELEGRAM_ID !== "" && String(userId) === ADMIN_TELEGRAM_ID;
+}
+
+async function handleApprove(
+  chatId: number,
+  pickIdStr: string,
+  supabase: AnySupabase,
+  userId: number,
+): Promise<void> {
+  const pickId = parseInt(pickIdStr, 10);
+  if (isNaN(pickId)) {
+    await sendMessage(chatId, `❌ Invalid pick ID. Usage: approve 123`);
+    return;
+  }
+
+  const { publishApprovedPick } = await import("@/lib/tipster/tipster-agent");
+  const result = await publishApprovedPick(pickId, supabase, String(userId));
+
+  if (result.ok) {
+    await sendMessage(chatId, `✅ Pick #${pickId} approved and published to channels.`);
+  } else {
+    await sendMessage(chatId, `❌ ${result.error}`);
+  }
+}
+
+async function handleReject(
+  chatId: number,
+  pickIdStr: string,
+  supabase: AnySupabase,
+): Promise<void> {
+  const pickId = parseInt(pickIdStr, 10);
+  if (isNaN(pickId)) {
+    await sendMessage(chatId, `❌ Invalid pick ID. Usage: reject 123`);
+    return;
+  }
+
+  const { data: pick } = await supabase
+    .from("picks")
+    .select("id, game, pick, status")
+    .eq("id", pickId)
+    .single();
+
+  if (!pick) {
+    await sendMessage(chatId, `❌ Pick #${pickId} not found.`);
+    return;
+  }
+  if (pick.status !== "draft") {
+    await sendMessage(chatId, `❌ Pick #${pickId} is not a draft (status: ${pick.status}).`);
+    return;
+  }
+
+  await supabase.from("picks").update({ status: "rejected" }).eq("id", pickId);
+  await sendMessage(chatId, `❌ Pick #${pickId} rejected: ${pick.game} — ${pick.pick}`);
+}
+
+async function handleEdit(
+  chatId: number,
+  args: string,
+  supabase: AnySupabase,
+): Promise<void> {
+  // Format: edit <id> <field> <value>
+  const parts = args.split(/\s+/);
+  if (parts.length < 3) {
+    await sendMessage(chatId, `❌ Usage: edit 123 odds 1.95\nFields: odds, pick, stake`);
+    return;
+  }
+
+  const pickId = parseInt(parts[0], 10);
+  const field = parts[1].toLowerCase();
+  const value = parts.slice(2).join(" ");
+
+  if (isNaN(pickId)) {
+    await sendMessage(chatId, `❌ Invalid pick ID.`);
+    return;
+  }
+
+  const allowedFields: Record<string, string> = { odds: "odds", pick: "pick", stake: "stake" };
+  const dbField = allowedFields[field];
+  if (!dbField) {
+    await sendMessage(chatId, `❌ Can only edit: odds, pick, stake`);
+    return;
+  }
+
+  const { data: pick } = await supabase
+    .from("picks")
+    .select("id, status")
+    .eq("id", pickId)
+    .eq("status", "draft")
+    .single();
+
+  if (!pick) {
+    await sendMessage(chatId, `❌ Pick #${pickId} not found or not a draft.`);
+    return;
+  }
+
+  const updateValue = field === "odds" || field === "stake" ? parseFloat(value) : value;
+  if ((field === "odds" || field === "stake") && isNaN(updateValue as number)) {
+    await sendMessage(chatId, `❌ Invalid number for ${field}.`);
+    return;
+  }
+
+  await supabase.from("picks").update({ [dbField]: updateValue }).eq("id", pickId);
+  await sendMessage(chatId, `✏️ Pick #${pickId} updated: ${field} → ${value}`);
+}
+
+async function handleBulkApprove(
+  chatId: number,
+  supabase: AnySupabase,
+  userId: number,
+): Promise<void> {
+  const { data: drafts } = await supabase
+    .from("picks")
+    .select("id")
+    .eq("status", "draft")
+    .order("id", { ascending: true });
+
+  if (!drafts || drafts.length === 0) {
+    await sendMessage(chatId, `No drafts to approve.`);
+    return;
+  }
+
+  const { publishApprovedPick } = await import("@/lib/tipster/tipster-agent");
+  let approved = 0;
+  let failed = 0;
+  const errors: string[] = [];
+
+  for (const draft of drafts) {
+    const result = await publishApprovedPick(draft.id, supabase, String(userId));
+    if (result.ok) {
+      approved++;
+    } else {
+      failed++;
+      errors.push(result.error ?? `#${draft.id} failed`);
+    }
+  }
+
+  let msg = `✅ Bulk approve: ${approved} published`;
+  if (failed > 0) msg += `, ${failed} failed`;
+  if (errors.length > 0) msg += `\n${errors.join("\n")}`;
+  await sendMessage(chatId, msg);
+}
+
+async function handleBulkReject(
+  chatId: number,
+  supabase: AnySupabase,
+): Promise<void> {
+  // Count drafts first, then reject
+  const { data: drafts } = await supabase
+    .from("picks")
+    .select("id")
+    .eq("status", "draft");
+
+  const draftCount = drafts?.length ?? 0;
+
+  if (draftCount > 0) {
+    await supabase
+      .from("picks")
+      .update({ status: "rejected" })
+      .eq("status", "draft");
+  }
+
+  await sendMessage(chatId, `❌ Bulk reject: ${draftCount} drafts rejected.`);
+}
+
+async function handleDrafts(
+  chatId: number,
+  supabase: AnySupabase,
+): Promise<void> {
+  const { data: drafts } = await supabase
+    .from("picks")
+    .select("id, game, pick, odds, confidence, pool, game_time")
+    .eq("status", "draft")
+    .order("game_time", { ascending: true });
+
+  if (!drafts || drafts.length === 0) {
+    await sendMessage(chatId, `No pending drafts.`);
+    return;
+  }
+
+  let msg = `📋 <b>${drafts.length} PENDING DRAFTS</b>\n━━━━━━━━━━━━━━━━━━━━━━\n`;
+  for (const d of drafts) {
+    const gt = d.game_time ? new Date(d.game_time) : null;
+    const timeStr = gt ? gt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "UTC" }) + " UTC" : "?";
+    const poolEmoji = d.pool === "safe" ? "🛡️" : "⚡";
+    msg += `\n${poolEmoji} #${d.id}: ${d.game}\n${d.pick} @ ${d.odds} | ${d.confidence}% | ${timeStr}\n`;
+  }
+  msg += `\n✅ <code>approve all</code> | ❌ <code>reject all</code>`;
+  await sendMessage(chatId, msg);
+}
+
 // ── Health check (GET) — for browser testing ──
 
 export async function GET() {
@@ -701,7 +896,31 @@ export async function POST(request: Request) {
 
   // Route commands
   try {
-    if (cmd === "/start" || cmd === "/help") {
+    // ── Admin commands (text-based, no slash prefix) ──
+    const lowerText = text.toLowerCase().trim();
+
+    if (cmd === "/myid") {
+      await sendMessage(chatId, `Your Telegram ID: <code>${userId}</code>`);
+    } else if (isAdmin(userId) && (lowerText.startsWith("approve ") || lowerText.startsWith("✅ "))) {
+      const arg = text.replace(/^(approve|✅)\s+/i, "").trim();
+      if (arg.toLowerCase() === "all") {
+        await handleBulkApprove(chatId, supabase, userId);
+      } else {
+        await handleApprove(chatId, arg, supabase, userId);
+      }
+    } else if (isAdmin(userId) && (lowerText.startsWith("reject ") || lowerText.startsWith("❌ "))) {
+      const arg = text.replace(/^(reject|❌)\s+/i, "").trim();
+      if (arg.toLowerCase() === "all") {
+        await handleBulkReject(chatId, supabase);
+      } else {
+        await handleReject(chatId, arg, supabase);
+      }
+    } else if (isAdmin(userId) && (lowerText.startsWith("edit ") || lowerText.startsWith("✏️ "))) {
+      const args = text.replace(/^(edit|✏️)\s+/i, "").trim();
+      await handleEdit(chatId, args, supabase);
+    } else if (isAdmin(userId) && (cmd === "/drafts" || lowerText === "drafts")) {
+      await handleDrafts(chatId, supabase);
+    } else if (cmd === "/start" || cmd === "/help") {
       await handleStart(chatId, tier);
     } else if (cmd === "/today") {
       await handleToday(chatId, tier, supabase);
@@ -726,9 +945,11 @@ export async function POST(request: Request) {
       // Free text — detect if sports-related
       if (text.startsWith("/")) {
         await sendMessage(chatId, `🦈 Unknown command. Try /start for available commands.\n🦈`);
-      } else {
-        // Route to /ask logic for natural language
+      } else if (!isAdmin(userId)) {
+        // Route to /ask logic for natural language (non-admin only)
         await handleAsk(chatId, tier, text, supabase, userId);
+      } else {
+        await sendMessage(chatId, `🦈 Unknown command. Admin commands: approve/reject/edit/drafts\n🦈`);
       }
     }
   } catch (err) {
