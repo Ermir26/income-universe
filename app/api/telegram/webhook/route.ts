@@ -624,9 +624,9 @@ async function handleApprove(
   supabase: AnySupabase,
   userId: number,
 ): Promise<void> {
-  const pickId = parseInt(pickIdStr, 10);
-  if (isNaN(pickId)) {
-    await sendMessage(chatId, `❌ Invalid pick ID. Usage: approve 123`);
+  const pickId = pickIdStr.trim();
+  if (!pickId) {
+    await sendMessage(chatId, `❌ Invalid pick ID. Usage: approve <id>`);
     return;
   }
 
@@ -634,7 +634,7 @@ async function handleApprove(
   const result = await publishApprovedPick(pickId, supabase, String(userId));
 
   if (result.ok) {
-    await sendMessage(chatId, `✅ Pick #${pickId} approved and published to channels.`);
+    await sendMessage(chatId, `✅ Pick ${pickId} approved and published to channels.`);
   } else {
     await sendMessage(chatId, `❌ ${result.error}`);
   }
@@ -645,9 +645,9 @@ async function handleReject(
   pickIdStr: string,
   supabase: AnySupabase,
 ): Promise<void> {
-  const pickId = parseInt(pickIdStr, 10);
-  if (isNaN(pickId)) {
-    await sendMessage(chatId, `❌ Invalid pick ID. Usage: reject 123`);
+  const pickId = pickIdStr.trim();
+  if (!pickId) {
+    await sendMessage(chatId, `❌ Invalid pick ID. Usage: reject <id>`);
     return;
   }
 
@@ -658,16 +658,16 @@ async function handleReject(
     .single();
 
   if (!pick) {
-    await sendMessage(chatId, `❌ Pick #${pickId} not found.`);
+    await sendMessage(chatId, `❌ Pick ${pickId} not found.`);
     return;
   }
   if (pick.status !== "draft") {
-    await sendMessage(chatId, `❌ Pick #${pickId} is not a draft (status: ${pick.status}).`);
+    await sendMessage(chatId, `❌ Pick ${pickId} is not a draft (status: ${pick.status}).`);
     return;
   }
 
   await supabase.from("picks").update({ status: "rejected" }).eq("id", pickId);
-  await sendMessage(chatId, `❌ Pick #${pickId} rejected: ${pick.game} — ${pick.pick}`);
+  await sendMessage(chatId, `❌ Pick rejected: ${pick.game} — ${pick.pick}`);
 }
 
 async function handleEdit(
@@ -676,17 +676,23 @@ async function handleEdit(
   supabase: AnySupabase,
 ): Promise<void> {
   // Format: edit <id> <field> <value>
-  const parts = args.split(/\s+/);
-  if (parts.length < 3) {
-    await sendMessage(chatId, `❌ Usage: edit 123 odds 1.95\nFields: odds, pick, stake`);
+  // UUID IDs contain hyphens, so split carefully: first token is ID, second is field, rest is value
+  const firstSpace = args.indexOf(" ");
+  if (firstSpace === -1) {
+    await sendMessage(chatId, `❌ Usage: edit <id> odds 1.95\nFields: odds, pick, stake`);
     return;
   }
+  const pickId = args.slice(0, firstSpace).trim();
+  const rest = args.slice(firstSpace + 1).trim();
+  const secondSpace = rest.indexOf(" ");
+  if (secondSpace === -1) {
+    await sendMessage(chatId, `❌ Usage: edit <id> odds 1.95\nFields: odds, pick, stake`);
+    return;
+  }
+  const field = rest.slice(0, secondSpace).toLowerCase();
+  const value = rest.slice(secondSpace + 1).trim();
 
-  const pickId = parseInt(parts[0], 10);
-  const field = parts[1].toLowerCase();
-  const value = parts.slice(2).join(" ");
-
-  if (isNaN(pickId)) {
+  if (!pickId) {
     await sendMessage(chatId, `❌ Invalid pick ID.`);
     return;
   }
@@ -706,7 +712,7 @@ async function handleEdit(
     .single();
 
   if (!pick) {
-    await sendMessage(chatId, `❌ Pick #${pickId} not found or not a draft.`);
+    await sendMessage(chatId, `❌ Pick ${pickId} not found or not a draft.`);
     return;
   }
 
@@ -717,7 +723,7 @@ async function handleEdit(
   }
 
   await supabase.from("picks").update({ [dbField]: updateValue }).eq("id", pickId);
-  await sendMessage(chatId, `✏️ Pick #${pickId} updated: ${field} → ${value}`);
+  await sendMessage(chatId, `✏️ Pick ${pickId} updated: ${field} → ${value}`);
 }
 
 async function handleBulkApprove(

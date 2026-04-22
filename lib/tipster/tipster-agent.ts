@@ -1061,7 +1061,7 @@ function formatMethod(card: AnalysisCard, bankroll: number, exposedToday: number
 // ─── Admin Approval: Publish a draft pick to public channels ───
 
 export async function publishApprovedPick(
-  pickId: number,
+  pickId: string,
   supabase: SupabaseClient,
   adminId: string,
 ): Promise<{ ok: boolean; error?: string }> {
