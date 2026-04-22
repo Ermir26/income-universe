@@ -666,31 +666,30 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
   const edgeCards = liveCards.filter((c) => c.pool === "edge" && !c.is_underdog_alert);
   const underdogCard = liveCards.find((c) => c.is_underdog_alert);
 
-  // Free channel: all safe picks + 1 lowest-confidence edge (a taste)
+  // FREE channel: ONLY safe pool picks. No edge picks at all.
   const freePickIds = new Set<string>();
   for (const c of safeCards) freePickIds.add(c.game_id);
-  // Give free users the lowest-confidence edge pick (a taste, not the best)
-  const edgeSortedAsc = [...edgeCards].sort((a, b) => a.confidence - b.confidence);
-  const edgeTeaser = edgeSortedAsc[0] ?? null;
-  if (edgeTeaser) freePickIds.add(edgeTeaser.game_id);
 
-  // VIP channel: ALL edge picks + underdog alert (no safe picks — those are free-only)
+  // VIP channel: ONLY edge pool picks + underdog alerts. No safe picks.
   const vipPickIds = new Set<string>();
   for (const c of edgeCards) vipPickIds.add(c.game_id);
   if (underdogCard) vipPickIds.add(underdogCard.game_id);
 
-  // Method channel: edge picks with confidence >= 70 (max 3) + foundation/safe (NO underdog alerts)
+  // METHOD channel: top 3 highest-confidence edge picks (conf >= 70) + all safe/foundation (1u stake). No underdog alerts.
   const METHOD_MIN_CONFIDENCE = 70;
-  const METHOD_MAX_PICKS = 3;
+  const METHOD_MAX_EDGE_PICKS = 3;
   const methodPickIds = new Set<string>();
-  let methodCount = 0;
   for (const c of safeCards) methodPickIds.add(c.game_id);
+  let methodEdgeCount = 0;
   for (const c of edgeCards) {
-    if (c.confidence >= METHOD_MIN_CONFIDENCE && methodCount < METHOD_MAX_PICKS) {
+    if (c.confidence >= METHOD_MIN_CONFIDENCE && methodEdgeCount < METHOD_MAX_EDGE_PICKS) {
       methodPickIds.add(c.game_id);
-      methodCount++;
+      methodEdgeCount++;
     }
   }
+
+  // Edge pick count for free channel teaser line
+  const edgePickCount = edgeCards.length + (underdogCard ? 1 : 0);
 
   // ── Get bankroll context for Method format ──
   let currentBankroll = 100;
@@ -758,15 +757,18 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
       // Blockchain timestamp before saving
       const chain = await blockchainTimestamp(card);
 
-      // Determine channel value for database
-      const goesToFree = freePickIds.has(card.game_id);
-      const goesToVip = vipPickIds.has(card.game_id);
-      const goesToMethod = methodChannelId && methodPickIds.has(card.game_id);
-      let channel = goesToVip ? "vip" : "free";
-      if (goesToFree && goesToVip && goesToMethod) channel = "all";
-      else if (goesToFree && goesToVip) channel = "both";
-      else if (goesToVip && goesToMethod) channel = "vip+method";
-      else if (goesToFree) channel = "free";
+      // Determine channel — a pick goes to exactly one destination set
+      // Safe picks → "free" or "method" (if also method-eligible)
+      // Edge picks → "vip" or "vip+method" (if also method-eligible)
+      // Never "both" or "all" — safe and edge are mutually exclusive channels
+      const isSafe = card.pool === "safe";
+      const isMethodEligible = methodChannelId && methodPickIds.has(card.game_id);
+      let channel: string;
+      if (isSafe) {
+        channel = isMethodEligible ? "method" : "free";
+      } else {
+        channel = isMethodEligible ? "vip+method" : "vip";
+      }
 
       // Insert as DRAFT — admin must approve before publishing
       const { data: row } = await supabase.from("picks").insert({
@@ -965,8 +967,8 @@ function formatFree(card: AnalysisCard): string {
   return html;
 }
 
-// Free channel daily batch (foundation + 1 edge taste)
-function formatFreeBatch(safeCards: AnalysisCard[], edgeTeaser: AnalysisCard | null, edgeCount: number): string {
+// Free channel daily batch (safe picks only — no edge reveals)
+function formatFreeBatch(safeCards: AnalysisCard[], edgeCount: number): string {
   const dateStr = safeCards.length > 0 ? formatFullDate(safeCards[0].game_time) : formatFullDate(new Date().toISOString());
   let html = `🦈 <b>FREE PICKS</b> — ${dateStr}\n\n`;
 
@@ -975,14 +977,9 @@ function formatFreeBatch(safeCards: AnalysisCard[], edgeTeaser: AnalysisCard | n
     html += `${card.game} — <b>${card.pick}</b> @ ${card.odds}\n\n`;
   }
 
-  if (edgeTeaser) {
-    html += `⚡ <b>EDGE PLAY</b>\n`;
-    html += `${edgeTeaser.game}\n`;
-    html += `Pick: <b>${edgeTeaser.pick}</b> @ ${edgeTeaser.odds}\n`;
-    html += `${edgeTeaser.analysis.split('.')[0]}.\n\n`;
+  if (edgeCount > 0) {
+    html += `💎 VIP has ${edgeCount} edge plays today → sharkline.ai\n`;
   }
-
-  html += `VIP members got ${edgeCount} more edge plays today → sharkline.ai\n`;
   html += `🦈 Sharkline`;
   return html;
 }
@@ -1127,29 +1124,32 @@ export async function publishApprovedPick(
     verified: pick.verified ?? false,
   };
 
-  // ── Publish to VIP channel ──
-  if (VIP_CH && BOT_TOKEN && ["vip", "both", "vip+method", "all"].includes(channel)) {
+  // Channel routing: "free" → FREE only, "vip" → VIP only,
+  // "method" → FREE + METHOD (safe picks), "vip+method" → VIP + METHOD (edge picks)
+
+  // ── Publish to FREE channel (safe picks only) ──
+  if (FREE_CH && BOT_TOKEN && ["free", "method"].includes(channel)) {
+    try {
+      const freeHtml = formatFree(card);
+      await sendTelegramHtml(freeHtml, BOT_TOKEN, FREE_CH);
+    } catch (err) {
+      console.log(`   FREE publish failed for ${pickId}: ${(err as Error).message}`);
+    }
+  }
+
+  // ── Publish to VIP channel (edge picks only) ──
+  if (VIP_CH && BOT_TOKEN && ["vip", "vip+method"].includes(channel)) {
     try {
       const vipFormatter = card.is_underdog_alert ? formatVipUnderdogAlert : formatVip;
       const vipHtml = appendChainBadgeToHtml(vipFormatter(card), chainInfo, card.game_time);
       await sendTelegramHtml(vipHtml, BOT_TOKEN, VIP_CH);
     } catch (err) {
-      console.log(`   VIP publish failed for #${pickId}: ${(err as Error).message}`);
+      console.log(`   VIP publish failed for ${pickId}: ${(err as Error).message}`);
     }
   }
 
-  // ── Publish to FREE channel ──
-  if (FREE_CH && BOT_TOKEN && ["free", "both", "all"].includes(channel)) {
-    try {
-      const freeHtml = formatFree(card);
-      await sendTelegramHtml(freeHtml, BOT_TOKEN, FREE_CH);
-    } catch (err) {
-      console.log(`   FREE publish failed for #${pickId}: ${(err as Error).message}`);
-    }
-  }
-
-  // ── Publish to METHOD channel ──
-  if (METHOD_CH && BOT_TOKEN && ["vip+method", "all"].includes(channel) && !card.is_underdog_alert) {
+  // ── Publish to METHOD channel (safe w/ 1u stake + top edge picks, no underdog alerts) ──
+  if (METHOD_CH && BOT_TOKEN && ["method", "vip+method"].includes(channel) && !card.is_underdog_alert) {
     try {
       let bankroll = 100;
       let exposedToday = 0;
@@ -1169,14 +1169,18 @@ export async function publishApprovedPick(
         if (sysStatus?.mode) systemMode = sysStatus.mode;
       } catch { /* use default */ }
 
+      // Safe picks go to method with 1u stake
+      const methodStake = card.pool === "safe" ? 1 : card.stake;
+      const methodCard = { ...card, stake: methodStake } as AnalysisCard;
+
       const methodHtml = appendChainBadgeToHtml(
-        formatMethod(card, bankroll, exposedToday, systemMode),
+        formatMethod(methodCard, bankroll, exposedToday, systemMode),
         chainInfo,
         card.game_time,
       );
       await sendTelegramHtml(methodHtml, BOT_TOKEN, METHOD_CH);
     } catch (err) {
-      console.log(`   METHOD publish failed for #${pickId}: ${(err as Error).message}`);
+      console.log(`   METHOD publish failed for ${pickId}: ${(err as Error).message}`);
     }
   }
 
