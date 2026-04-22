@@ -666,30 +666,11 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
   const edgeCards = liveCards.filter((c) => c.pool === "edge" && !c.is_underdog_alert);
   const underdogCard = liveCards.find((c) => c.is_underdog_alert);
 
-  // FREE channel: ONLY safe pool picks. No edge picks at all.
-  const freePickIds = new Set<string>();
-  for (const c of safeCards) freePickIds.add(c.game_id);
-
-  // VIP channel: ONLY edge pool picks + underdog alerts. No safe picks.
-  const vipPickIds = new Set<string>();
-  for (const c of edgeCards) vipPickIds.add(c.game_id);
-  if (underdogCard) vipPickIds.add(underdogCard.game_id);
-
-  // METHOD channel: top 3 highest-confidence edge picks (conf >= 70) + all safe/foundation (1u stake). No underdog alerts.
+  // Channel rules — safe and edge are completely separate pools:
+  //   Safe  → "free"        (FREE channel only, never VIP/Method)
+  //   Edge  → "vip+method"  (VIP + Method — analysis + staking formats)
+  //   Underdog → "vip"      (VIP only — too volatile for Method bankroll)
   const METHOD_MIN_CONFIDENCE = 70;
-  const METHOD_MAX_EDGE_PICKS = 3;
-  const methodPickIds = new Set<string>();
-  for (const c of safeCards) methodPickIds.add(c.game_id);
-  let methodEdgeCount = 0;
-  for (const c of edgeCards) {
-    if (c.confidence >= METHOD_MIN_CONFIDENCE && methodEdgeCount < METHOD_MAX_EDGE_PICKS) {
-      methodPickIds.add(c.game_id);
-      methodEdgeCount++;
-    }
-  }
-
-  // Edge pick count for free channel teaser line
-  const edgePickCount = edgeCards.length + (underdogCard ? 1 : 0);
 
   // ── Get bankroll context for Method format ──
   let currentBankroll = 100;
@@ -757,17 +738,14 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
       // Blockchain timestamp before saving
       const chain = await blockchainTimestamp(card);
 
-      // Determine channel — a pick goes to exactly one destination set
-      // Safe picks → "free" or "method" (if also method-eligible)
-      // Edge picks → "vip" or "vip+method" (if also method-eligible)
-      // Never "both" or "all" — safe and edge are mutually exclusive channels
-      const isSafe = card.pool === "safe";
-      const isMethodEligible = methodChannelId && methodPickIds.has(card.game_id);
+      // Channel assignment — pools never overlap between free and VIP/Method
       let channel: string;
-      if (isSafe) {
-        channel = isMethodEligible ? "method" : "free";
+      if (card.pool === "safe") {
+        channel = "free";
+      } else if (card.is_underdog_alert) {
+        channel = "vip";
       } else {
-        channel = isMethodEligible ? "vip+method" : "vip";
+        channel = "vip+method";
       }
 
       // Insert as DRAFT — admin must approve before publishing
@@ -1124,11 +1102,13 @@ export async function publishApprovedPick(
     verified: pick.verified ?? false,
   };
 
-  // Channel routing: "free" → FREE only, "vip" → VIP only,
-  // "method" → FREE + METHOD (safe picks), "vip+method" → VIP + METHOD (edge picks)
+  // Channel routing:
+  //   "free"       → FREE channel only (minimal format)
+  //   "vip"        → VIP channel only (full analysis — underdog alerts)
+  //   "vip+method" → VIP (analysis) + METHOD (staking/bankroll)
 
   // ── Publish to FREE channel (safe picks only) ──
-  if (FREE_CH && BOT_TOKEN && ["free", "method"].includes(channel)) {
+  if (FREE_CH && BOT_TOKEN && channel === "free") {
     try {
       const freeHtml = formatFree(card);
       await sendTelegramHtml(freeHtml, BOT_TOKEN, FREE_CH);
@@ -1137,8 +1117,8 @@ export async function publishApprovedPick(
     }
   }
 
-  // ── Publish to VIP channel (edge picks only) ──
-  if (VIP_CH && BOT_TOKEN && ["vip", "vip+method"].includes(channel)) {
+  // ── Publish to VIP channel (edge + underdog) ──
+  if (VIP_CH && BOT_TOKEN && (channel === "vip" || channel === "vip+method")) {
     try {
       const vipFormatter = card.is_underdog_alert ? formatVipUnderdogAlert : formatVip;
       const vipHtml = appendChainBadgeToHtml(vipFormatter(card), chainInfo, card.game_time);
@@ -1148,8 +1128,8 @@ export async function publishApprovedPick(
     }
   }
 
-  // ── Publish to METHOD channel (safe w/ 1u stake + top edge picks, no underdog alerts) ──
-  if (METHOD_CH && BOT_TOKEN && ["method", "vip+method"].includes(channel) && !card.is_underdog_alert) {
+  // ── Publish to METHOD channel (edge picks with staking format, no underdog alerts) ──
+  if (METHOD_CH && BOT_TOKEN && channel === "vip+method") {
     try {
       let bankroll = 100;
       let exposedToday = 0;
@@ -1169,12 +1149,8 @@ export async function publishApprovedPick(
         if (sysStatus?.mode) systemMode = sysStatus.mode;
       } catch { /* use default */ }
 
-      // Safe picks go to method with 1u stake
-      const methodStake = card.pool === "safe" ? 1 : card.stake;
-      const methodCard = { ...card, stake: methodStake } as AnalysisCard;
-
       const methodHtml = appendChainBadgeToHtml(
-        formatMethod(methodCard, bankroll, exposedToday, systemMode),
+        formatMethod(card, bankroll, exposedToday, systemMode),
         chainInfo,
         card.game_time,
       );

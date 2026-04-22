@@ -391,19 +391,37 @@ async function handleRecord(
     return;
   }
 
-  const wins = picks.filter((p) => p.result === "won").length;
-  const losses = picks.filter((p) => p.result === "lost").length;
-  const winRate = ((wins / (wins + losses)) * 100).toFixed(1);
+  if (tier === "free") {
+    // Free users see edge pick record only — shows VIP value
+    const edgePicks = picks.filter((p) => p.pool === "edge");
+    const edgeWins = edgePicks.filter((p) => p.result === "won").length;
+    const edgeLosses = edgePicks.filter((p) => p.result === "lost").length;
+    const edgeTotal = edgeWins + edgeLosses;
 
-  let msg = `🦈 <b>RECORD</b>\n${wins}W-${losses}L (${winRate}%)\n`;
+    if (edgeTotal === 0) {
+      await sendMessage(chatId, `🦈 No edge picks settled yet. Check back soon.\n🦈`);
+      return;
+    }
 
-  if (tier !== "free") {
-    const netUnits = picks.reduce((s, p) => s + (parseFloat(p.profit) || 0), 0);
+    const edgeWinRate = ((edgeWins / edgeTotal) * 100).toFixed(1);
+    let msg = `🦈 <b>RECORD</b>\n`;
+    msg += `Edge picks: ${edgeWins}W-${edgeLosses}L (${edgeWinRate}%)\n\n`;
+    msg += `🔥 VIP picks are hitting ${edgeWinRate}% — upgrade at sharkline.ai\n🦈`;
+    await sendMessage(chatId, msg);
+  } else {
+    // VIP/Method: full edge pick record with units and sport breakdown
+    const edgePicks = picks.filter((p) => p.pool === "edge");
+    const wins = edgePicks.filter((p) => p.result === "won").length;
+    const losses = edgePicks.filter((p) => p.result === "lost").length;
+    const winRate = (wins + losses) > 0 ? ((wins / (wins + losses)) * 100).toFixed(1) : "0.0";
+    const netUnits = edgePicks.reduce((s, p) => s + (parseFloat(p.profit) || 0), 0);
+
+    let msg = `🦈 <b>RECORD</b>\n${wins}W-${losses}L (${winRate}%)\n`;
     msg += `Units: ${netUnits >= 0 ? "+" : ""}${netUnits.toFixed(1)}u\n`;
 
     // Sport breakdown
     const bySport: Record<string, { w: number; l: number }> = {};
-    for (const p of picks) {
+    for (const p of edgePicks) {
       const sport = p.sport || "Unknown";
       if (!bySport[sport]) bySport[sport] = { w: 0, l: 0 };
       if (p.result === "won") bySport[sport].w++;
@@ -413,10 +431,10 @@ async function handleRecord(
     for (const [sport, { w, l }] of Object.entries(bySport)) {
       msg += `${sport}: ${w}W-${l}L\n`;
     }
-  }
 
-  msg += `\n🦈`;
-  await sendMessage(chatId, msg);
+    msg += `\n🦈`;
+    await sendMessage(chatId, msg);
+  }
 }
 
 async function handleBankroll(
