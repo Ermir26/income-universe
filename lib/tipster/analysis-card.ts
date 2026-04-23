@@ -64,6 +64,8 @@ export interface AnalysisCard {
   telegram_html: string;
   is_sharpest: boolean;
   is_underdog_alert: boolean;
+  validator_corrected?: string; // "bookmaker" if auto-corrected, undefined if clean
+  original_bookmaker?: string;  // original value before correction
 }
 
 interface ClaudeCandidate {
@@ -518,6 +520,7 @@ RULES:
   console.log(`   📊 Claude returned ${candidates.length} ${pickTypeHint} candidates`);
 
   // ── Validate & auto-correct bookmaker attributions ──
+  const correctedBookmakers = new Map<string, string>(); // game → original bookmaker
   for (const cand of candidates) {
     const game = selectedGames.find((g) => {
       const fwd = `${g.home_team} vs ${g.away_team}`;
@@ -554,6 +557,7 @@ RULES:
         }
       }
       cand.bookmaker = bestBook;
+      correctedBookmakers.set(cand.game, original);
       console.log(`   🔧 BOOKMAKER FIX: "${original}" → "${bestBook}" for ${cand.game}`);
     }
   }
@@ -743,6 +747,8 @@ RULES:
       telegram_html: html,
       is_sharpest: cand.sharpest === true,
       is_underdog_alert: cand.is_underdog_alert === true,
+      validator_corrected: correctedBookmakers.has(cand.game) ? "bookmaker" : undefined,
+      original_bookmaker: correctedBookmakers.get(cand.game),
     });
   }
 
@@ -842,12 +848,15 @@ Be honest with ratings. Don't inflate.`,
   }
 
   // ── Validate & auto-correct bookmaker ──
+  let singleCorrected: string | undefined;
+  let singleOriginalBook: string | undefined;
   const availableBooks = (game.bookmakers ?? [])
     .filter((bm) => TRUSTED_BOOKS.has(bm.title))
     .map((bm) => bm.title);
 
   if (availableBooks.length > 0 && !availableBooks.includes(parsed.bookmaker)) {
     const original = parsed.bookmaker;
+    singleOriginalBook = original;
     const targetOdds = parseInt(parsed.odds, 10);
     let bestBook = availableBooks[0];
     if (!isNaN(targetOdds)) {
@@ -865,6 +874,7 @@ Be honest with ratings. Don't inflate.`,
       }
     }
     parsed.bookmaker = bestBook;
+    singleCorrected = "bookmaker";
     console.log(`   🔧 BOOKMAKER FIX (single): "${original}" → "${bestBook}" for ${game.home_team} vs ${game.away_team}`);
   }
 
@@ -922,6 +932,8 @@ Be honest with ratings. Don't inflate.`,
     stats_line: statsLine, telegram_html: html,
     is_sharpest: false,
     is_underdog_alert: false,
+    validator_corrected: singleCorrected,
+    original_bookmaker: singleOriginalBook,
   };
 }
 

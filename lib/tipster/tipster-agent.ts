@@ -10,6 +10,8 @@ import { hashPick, timestampOnChain, getPolygonScanUrl } from "./blockchain";
 import { enforceSportSafety } from "./safety";
 import { getActiveSportKeys, SPORT_CATEGORY_KEYS } from "./brand";
 import { getEstimatedDurationMinutes, SETTLEMENT_GRACE_MINUTES, SPORT_KEY_TO_ESPN } from "../sports-data/espn-leagues";
+import { crossCheckWithPinnacle } from "./pinnacle-cross-check";
+import { sendAdminAlert } from "../integrations/telegram";
 
 /** Parse pick string into structured bet fields */
 function parseBetFields(pickStr: string, game: string): { bet_type: string; line: number | null; side: string } {
@@ -375,6 +377,14 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
     return { gamesFound: 0, cardsGenerated: 0, picksSent: 0, cards: [] };
   }
 
+  // Build game lookup by event_id for cross-check + decision log
+  const gameById = new Map<string, GameData>();
+  for (const g of games) gameById.set(g.id, g);
+
+  // Pinnacle cross-check enabled flag + scraper failure counter
+  const pinnacleEnabled = process.env.PINNACLE_CROSSCHECK_ENABLED !== "false";
+  let pinnacleScraperFailures = 0;
+
   // Step 2: Generate candidates using multi-game batch analysis
   // Generate 10 candidates per batch, filter to top picks (generate more, publish less).
   // Foundation picks are always attempted separately (at least 1).
@@ -732,7 +742,62 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
       // 30-minute time guard — skip if game starts too soon
       if (isGameTooSoon(card.game_time)) {
         console.log(`   ⏰ SKIPPED (game too soon): ${card.game} starts at ${card.game_time}`);
+        // Log decision
+        await supabase.from("pick_decision_log").insert({
+          game_id: card.game_id, sport: card.sport_key, game: card.game,
+          pick: card.pick, odds: card.odds, bookmaker: card.bookmaker,
+          confidence: card.confidence,
+          final_decision: "rejected_time_guard",
+          rejection_reason: "Game starts within 30 minutes",
+        }).then(() => {}, () => {});
         continue;
+      }
+
+      // ── Pinnacle cross-check (Phase 3) ──
+      const sourceGame = gameById.get(card.game_id);
+      const betFields = parseBetFields(card.pick, card.game);
+      const citedPrice = parseInt(card.odds, 10);
+
+      if (pinnacleEnabled && sourceGame) {
+        const [home, away] = card.game.split(" vs ").map((t) => t.trim());
+        const crossCheck = await crossCheckWithPinnacle(
+          supabase,
+          card.game_id,
+          card.sport_key,
+          home,
+          away,
+          card.game_time,
+          betFields.bet_type,
+          betFields.side,
+          card.bookmaker,
+          betFields.line,
+          isNaN(citedPrice) ? 0 : citedPrice,
+        );
+
+        if (crossCheck.result === "veto") {
+          console.log(`   🚫 PINNACLE VETO: ${card.game} — ${crossCheck.reason}`);
+          await supabase.from("pick_decision_log").insert({
+            game_id: card.game_id, sport: card.sport_key, game: card.game,
+            pick: card.pick, odds: card.odds, bookmaker: card.bookmaker,
+            confidence: card.confidence,
+            odds_api_payload: sourceGame,
+            cross_check_result: "veto",
+            final_decision: "rejected_pinnacle",
+            rejection_reason: crossCheck.reason,
+          }).then(() => {}, () => {});
+          await sendAdminAlert(
+            `[Sharkline alert] <b>PINNACLE VETO</b>\n` +
+            `Game: ${card.game}\n` +
+            `Pick: ${card.pick} @ ${card.odds} (${card.bookmaker})\n` +
+            `Reason: ${crossCheck.reason}`,
+          );
+          continue;
+        }
+
+        if (crossCheck.result === "scraper_failed") {
+          pinnacleScraperFailures++;
+          console.log(`   ⚠️ Pinnacle scraper failed for ${card.game} — continuing (fail-open)`);
+        }
       }
 
       // Blockchain timestamp before saving
@@ -761,7 +826,7 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
         pool: card.pool,
         is_sharpest: card.is_sharpest,
         is_underdog_alert: card.is_underdog_alert,
-        ...parseBetFields(card.pick, card.game),
+        ...betFields,
         ...settlementFields(card.sport_key, card.game_time),
         edge_percentage: card.scoring.breakdown.odds_value ?? null,
         pick_hash: chain.pick_hash, tx_hash: chain.tx_hash,
@@ -769,6 +834,31 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
         block_timestamp: chain.block_timestamp?.toISOString() ?? null,
         verified: chain.verified,
       }).select("id").single();
+
+      // Log successful pick decision
+      await supabase.from("pick_decision_log").insert({
+        game_id: card.game_id, sport: card.sport_key, game: card.game,
+        pick: card.pick, odds: card.odds, bookmaker: card.bookmaker,
+        confidence: card.confidence,
+        odds_api_payload: sourceGame ?? null,
+        validator_result: card.validator_corrected ? "corrected" : "pass",
+        validator_correction: card.validator_corrected ?? null,
+        cross_check_result: pinnacleEnabled ? "pass" : "skipped",
+        final_decision: "published",
+        pick_id: row?.id ?? null,
+      }).then(() => {}, () => {});
+
+      // Alert admin on validator auto-correction
+      if (card.validator_corrected) {
+        await sendAdminAlert(
+          `[Sharkline alert] <b>BOOKMAKER AUTO-CORRECTED</b>\n` +
+          `Game: ${card.game}\n` +
+          `Pick: ${card.pick} @ ${card.odds}\n` +
+          `Claude said: ${card.original_bookmaker}\n` +
+          `Corrected to: ${card.bookmaker}\n` +
+          `Reason: ${card.original_bookmaker} does not offer this line in the odds payload`,
+        );
+      }
 
       if (row?.id) {
         await recordBet(supabase, row.id, card.stake);
@@ -810,6 +900,15 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
     } catch (err) {
       console.log(`   Pick insert failed: ${(err as Error).message}`);
     }
+  }
+
+  // ── Alert if Pinnacle scraper failed too many times ──
+  if (pinnacleScraperFailures > 3) {
+    await sendAdminAlert(
+      `[Sharkline alert] <b>PINNACLE SCRAPER DEGRADED</b>\n` +
+      `${pinnacleScraperFailures} scraper failures in this cron run.\n` +
+      `Picks were allowed through (fail-open) but Pinnacle veto was not available.`,
+    );
   }
 
   // ── Send admin summary with bulk actions ──

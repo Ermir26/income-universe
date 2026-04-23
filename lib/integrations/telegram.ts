@@ -56,3 +56,39 @@ export async function sendScanReport(
   ].join("\n");
   return sendTelegramMessage(text);
 }
+
+/**
+ * Send an admin alert to the dedicated admin chat (not public channels).
+ * Uses TELEGRAM_ADMIN_CHAT_ID env var.
+ */
+export async function sendAdminAlert(message: string): Promise<boolean> {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN || "";
+  const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID || "";
+
+  if (!botToken || !adminChatId) {
+    console.log(`[Telegram/AdminAlert] ${message}`);
+    return true;
+  }
+
+  try {
+    const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: adminChatId,
+        text: message,
+        parse_mode: "HTML",
+      }),
+    });
+
+    if (!res.ok) {
+      console.error("[Telegram/AdminAlert] Send failed:", await res.text());
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error("[Telegram/AdminAlert] Error:", err);
+    return false;
+  }
+}
