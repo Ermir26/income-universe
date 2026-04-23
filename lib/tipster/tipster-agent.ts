@@ -4,7 +4,7 @@
 import { type SupabaseClient } from "@supabase/supabase-js";
 import { getTier, MIN_CONFIDENCE } from "./tiers";
 import { calculateConfidence, loadWeights, type ScoringWeights } from "./scoring-engine";
-import { generateCandidates, generateAnalysisCard, formatWinnerMessage, type AnalysisCard, type GameData } from "./analysis-card";
+import { generateCandidates, generateAnalysisCard, formatWinnerMessage, TRUSTED_BOOKS, type AnalysisCard, type GameData } from "./analysis-card";
 import { recordBet } from "./bankroll";
 import { hashPick, timestampOnChain, getPolygonScanUrl } from "./blockchain";
 import { enforceSportSafety } from "./safety";
@@ -216,6 +216,9 @@ export async function fetchUpcomingGames(
  * ESPN free API — fetch upcoming games with odds (no key, no quota).
  * Returns data in the same GameData format as The Odds API.
  */
+// ESPN provider names discovered at runtime — added to TRUSTED_BOOKS dynamically
+const espnProviderNames = new Set<string>();
+
 async function fetchUpcomingGamesFromESPN(
   sportKeys: string[],
   hoursAhead: number = 24,
@@ -264,46 +267,69 @@ async function fetchUpcomingGamesFromESPN(
           const oddsData = comp.odds?.[0];
 
           // Build bookmaker data from ESPN odds
+          // ESPN has two response formats: flat (homeTeamOdds.moneyLine) and nested (moneyline.home.close.odds)
+          // We try nested first (current ESPN format), then flat as fallback
           const bookmakers: GameData["bookmakers"] = [];
           if (oddsData) {
             const markets: Array<{ key: string; outcomes: Array<{ name: string; price: number; point?: number }> }> = [];
+            const ml = oddsData.moneyline;
+            const ps = oddsData.pointSpread;
+            const tot = oddsData.total;
 
-            // Moneyline
-            if (oddsData.homeTeamOdds?.moneyLine && oddsData.awayTeamOdds?.moneyLine) {
-              markets.push({
-                key: "h2h",
-                outcomes: [
-                  { name: homeName, price: oddsData.homeTeamOdds.moneyLine },
-                  { name: awayName, price: oddsData.awayTeamOdds.moneyLine },
-                ],
-              });
+            // Moneyline — nested structure: moneyline.home.close.odds / moneyline.away.close.odds
+            const homeML = ml?.home?.close?.odds ?? ml?.home?.open?.odds ?? oddsData.homeTeamOdds?.moneyLine;
+            const awayML = ml?.away?.close?.odds ?? ml?.away?.open?.odds ?? oddsData.awayTeamOdds?.moneyLine;
+            if (homeML && awayML) {
+              const outcomes: Array<{ name: string; price: number; point?: number }> = [
+                { name: homeName, price: parseFloat(homeML) },
+                { name: awayName, price: parseFloat(awayML) },
+              ];
+              // Draw (soccer)
+              const drawML = ml?.draw?.close?.odds ?? ml?.draw?.open?.odds ?? oddsData.drawOdds?.moneyLine;
+              if (drawML) {
+                outcomes.push({ name: "Draw", price: parseFloat(drawML) });
+              }
+              markets.push({ key: "h2h", outcomes });
             }
 
-            // Spread
-            if (oddsData.homeTeamOdds?.spreadOdds && oddsData.spread) {
-              const spread = parseFloat(oddsData.spread);
+            // Spread — nested: pointSpread.home.close.line / pointSpread.home.close.odds
+            const homeSpreadLine = ps?.home?.close?.line ?? ps?.home?.open?.line;
+            const homeSpreadOdds = ps?.home?.close?.odds ?? ps?.home?.open?.odds ?? oddsData.homeTeamOdds?.spreadOdds;
+            const awaySpreadLine = ps?.away?.close?.line ?? ps?.away?.open?.line;
+            const awaySpreadOdds = ps?.away?.close?.odds ?? ps?.away?.open?.odds ?? oddsData.awayTeamOdds?.spreadOdds;
+            if (homeSpreadLine && homeSpreadOdds) {
               markets.push({
                 key: "spreads",
                 outcomes: [
-                  { name: homeName, price: oddsData.homeTeamOdds.spreadOdds, point: spread },
-                  { name: awayName, price: oddsData.awayTeamOdds?.spreadOdds || -110, point: -spread },
+                  { name: homeName, price: parseFloat(homeSpreadOdds), point: parseFloat(homeSpreadLine) },
+                  { name: awayName, price: parseFloat(awaySpreadOdds || homeSpreadOdds), point: parseFloat(awaySpreadLine || String(-parseFloat(homeSpreadLine))) },
                 ],
               });
             }
 
-            // Totals
-            if (oddsData.overOdds && oddsData.overUnder) {
+            // Totals — nested: total.over.close.line / total.over.close.odds
+            const overLine = tot?.over?.close?.line ?? tot?.over?.open?.line;
+            const overOdds = tot?.over?.close?.odds ?? tot?.over?.open?.odds ?? oddsData.overOdds;
+            const underLine = tot?.under?.close?.line ?? tot?.under?.open?.line;
+            const underOdds = tot?.under?.close?.odds ?? tot?.under?.open?.odds ?? oddsData.underOdds;
+            const totalLine = overLine ?? (oddsData.overUnder ? String(oddsData.overUnder) : null);
+            if (totalLine && overOdds) {
+              // ESPN total lines come as "o2.5" or "u2.5" — strip the prefix
+              const parseTotalLine = (v: string) => parseFloat(v.replace(/^[ou]/i, ""));
               markets.push({
                 key: "totals",
                 outcomes: [
-                  { name: "Over", price: oddsData.overOdds, point: parseFloat(oddsData.overUnder) },
-                  { name: "Under", price: oddsData.underOdds || -110, point: parseFloat(oddsData.overUnder) },
+                  { name: "Over", price: parseFloat(overOdds), point: parseTotalLine(totalLine) },
+                  { name: "Under", price: parseFloat(underOdds || overOdds), point: parseTotalLine(underLine || totalLine) },
                 ],
               });
             }
 
             if (markets.length > 0) {
-              bookmakers.push({ key: "espn", title: oddsData.provider?.name || "ESPN BET", markets });
+              const providerName = oddsData.provider?.name || "ESPN BET";
+              bookmakers.push({ key: "espn", title: providerName, markets });
+              // Ensure ESPN provider name is in TRUSTED_BOOKS for validator
+              espnProviderNames.add(providerName);
             }
           }
 
@@ -321,6 +347,11 @@ async function fetchUpcomingGamesFromESPN(
         // ESPN is best-effort
       }
     }
+  }
+
+  // Register ESPN provider names in TRUSTED_BOOKS so validator accepts them
+  for (const name of espnProviderNames) {
+    TRUSTED_BOOKS.add(name);
   }
 
   console.log(`   📡 ESPN: ${allGames.length} upcoming games (${allGames.filter((g) => (g.bookmakers?.length ?? 0) > 0).length} with odds)`);

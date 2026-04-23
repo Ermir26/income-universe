@@ -116,9 +116,10 @@ function getLeagueName(key: string): string {
   return SPORT_LABELS[key] ?? key;
 }
 
-const TRUSTED_BOOKS = new Set([
+export const TRUSTED_BOOKS = new Set([
   "DraftKings", "FanDuel", "BetMGM", "Caesars", "PointsBet",
   "BetRivers", "Bovada", "BetOnline", "Pinnacle", "Bet365",
+  "ESPN BET",
 ]);
 
 function formatOddsForPrompt(game: GameData): string {
@@ -297,8 +298,19 @@ export async function generateCandidates(
   const { default: Anthropic } = await import("@anthropic-ai/sdk");
   const client = new Anthropic({ apiKey });
 
-  // Process all games — no artificial cap
-  const selectedGames = games;
+  // Hard gate: reject games with no bookmakers — Claude cannot analyze odds it can't see
+  const selectedGames = games.filter((g) => {
+    const hasBooks = (g.bookmakers ?? []).length > 0;
+    if (!hasBooks) {
+      console.log(`   🚫 FILTERED (no bookmakers): ${g.home_team} vs ${g.away_team} — will not be analyzed`);
+    }
+    return hasBooks;
+  });
+
+  if (selectedGames.length === 0) {
+    console.log(`   ⚠️ All games filtered out — no bookmakers available`);
+    return [];
+  }
 
   // Build odds text for all games
   const gamesBlock = selectedGames.map((g, i) => {
@@ -519,9 +531,13 @@ RULES:
 
   console.log(`   📊 Claude returned ${candidates.length} ${pickTypeHint} candidates`);
 
-  // ── Validate & auto-correct bookmaker attributions ──
+  // ── Validate pick line + price against payload, auto-correct bookmaker only ──
+  const PRICE_TOLERANCE = 5; // ±5 cents American odds
   const correctedBookmakers = new Map<string, string>(); // game → original bookmaker
-  for (const cand of candidates) {
+  const rejectedCandidates = new Set<number>(); // indices to drop
+
+  for (let ci = 0; ci < candidates.length; ci++) {
+    const cand = candidates[ci];
     const game = selectedGames.find((g) => {
       const fwd = `${g.home_team} vs ${g.away_team}`;
       const rev = `${g.away_team} vs ${g.home_team}`;
@@ -533,34 +549,137 @@ RULES:
     });
     if (!game) continue;
 
-    const availableBooks = (game.bookmakers ?? [])
-      .filter((bm) => TRUSTED_BOOKS.has(bm.title))
-      .map((bm) => bm.title);
+    // Parse Claude's pick to determine what market/line/side to look for
+    const citedPrice = parseInt(cand.odds, 10);
+    const pickTrimmed = cand.pick.trim();
+    const ouMatch = pickTrimmed.match(/^(?:F5\s+)?(Over|Under)\s+([\d.]+)$/i);
+    const spreadMatch = pickTrimmed.match(/^(.+?)\s+([+-][\d.]+)$/);
+    const isDrawPick = pickTrimmed.toLowerCase() === "draw";
+    let citedLine: number | null = null;
+    let marketKey: string;
+    let sideMatch: (o: { name: string; point?: number }) => boolean;
 
-    if (availableBooks.length > 0 && !availableBooks.includes(cand.bookmaker)) {
-      const original = cand.bookmaker;
-      // Try to find the book that actually offers the closest odds
-      const targetOdds = parseInt(cand.odds, 10);
-      let bestBook = availableBooks[0];
-      if (!isNaN(targetOdds)) {
-        let bestDiff = Infinity;
-        for (const bm of (game.bookmakers ?? []).filter((b) => TRUSTED_BOOKS.has(b.title))) {
-          for (const mkt of bm.markets) {
-            for (const o of mkt.outcomes) {
-              const diff = Math.abs(o.price - targetOdds);
-              if (diff < bestDiff) {
-                bestDiff = diff;
-                bestBook = bm.title;
-              }
-            }
-          }
+    if (ouMatch) {
+      citedLine = parseFloat(ouMatch[2]);
+      marketKey = pickTrimmed.match(/^F5/i) ? "totals" : "totals";
+      const side = ouMatch[1].toLowerCase();
+      sideMatch = (o) => o.name.toLowerCase() === (side === "over" ? "over" : "under");
+    } else if (isDrawPick) {
+      marketKey = "h2h";
+      sideMatch = (o) => o.name.toLowerCase() === "draw";
+    } else if (spreadMatch && Math.abs(parseFloat(spreadMatch[2])) <= 20) {
+      citedLine = parseFloat(spreadMatch[2]);
+      marketKey = "spreads";
+      const teamWord = spreadMatch[1].trim().toLowerCase();
+      const gameParts = cand.game.split(" vs ").map((t: string) => t.trim().toLowerCase());
+      const isHome = gameParts[0]?.includes(teamWord) || teamWord.includes(gameParts[0] ?? "");
+      sideMatch = (o) => {
+        const oName = o.name.toLowerCase();
+        return isHome
+          ? !!(gameParts[0] && (oName.includes(gameParts[0]) || gameParts[0].includes(oName)))
+          : !!(gameParts[1] && (oName.includes(gameParts[1]) || gameParts[1].includes(oName)));
+      };
+    } else {
+      // Moneyline
+      marketKey = "h2h";
+      const teamName = pickTrimmed.replace(/\s+ML$/i, "").replace(/\s+[+-]\d{3,}$/, "").trim().toLowerCase();
+      const gameParts = cand.game.split(" vs ").map((t: string) => t.trim().toLowerCase());
+      const isHome = gameParts[0]?.includes(teamName) || teamName.includes(gameParts[0] ?? "");
+      sideMatch = (o) => {
+        const oName = o.name.toLowerCase();
+        return isHome
+          ? !!(gameParts[0] && (oName.includes(gameParts[0]) || gameParts[0].includes(oName)))
+          : !!(gameParts[1] && (oName.includes(gameParts[1]) || gameParts[1].includes(oName)));
+      };
+    }
+
+    // Search all bookmakers for a matching outcome
+    type MatchResult = { book: string; price: number; line: number | null; exact: boolean };
+    const matches: MatchResult[] = [];
+
+    for (const bm of (game.bookmakers ?? []).filter((b) => TRUSTED_BOOKS.has(b.title))) {
+      for (const mkt of bm.markets) {
+        if (mkt.key !== marketKey) continue;
+        for (const o of mkt.outcomes) {
+          if (!sideMatch(o)) continue;
+          // Line check: for totals/spreads, line must match exactly
+          if (citedLine != null && o.point != null && o.point !== citedLine) continue;
+          if (citedLine != null && o.point == null) continue;
+          // This outcome matches the cited side + line
+          const priceDiff = isNaN(citedPrice) ? Infinity : Math.abs(o.price - citedPrice);
+          matches.push({ book: bm.title, price: o.price, line: o.point ?? null, exact: priceDiff <= PRICE_TOLERANCE });
         }
       }
-      cand.bookmaker = bestBook;
+    }
+
+    if (matches.length === 0) {
+      // No book offers this line/side — reject
+      console.log(`   🚫 VALIDATOR REJECT: ${cand.game} — ${cand.pick} @ ${cand.odds} (${cand.bookmaker}) — line not offered by any book`);
+      rejectedCandidates.add(ci);
+      // Log rejection to supabase
+      supabase.from("pick_decision_log").insert({
+        game_id: game.id, sport: game.sport_key, game: cand.game,
+        pick: cand.pick, odds: cand.odds, bookmaker: cand.bookmaker,
+        confidence: cand.confidence,
+        odds_api_payload: game,
+        validator_result: "rejected",
+        final_decision: "rejected_validator",
+        rejection_reason: `Line ${cand.pick} not offered by any trusted book. Market: ${marketKey}, cited line: ${citedLine}, cited price: ${citedPrice}`,
+      }).then(() => {}, () => {});
+      continue;
+    }
+
+    // Check if the cited bookmaker has the matching outcome
+    const citedBookMatch = matches.find((m) => m.book === cand.bookmaker && m.exact);
+    if (citedBookMatch) {
+      // Perfect match — bookmaker + line + price all correct
+      continue;
+    }
+
+    // Check if cited book has it but price is off
+    const citedBookWrongPrice = matches.find((m) => m.book === cand.bookmaker && !m.exact);
+    if (citedBookWrongPrice) {
+      // Book has the line but price diverges beyond tolerance — reject
+      console.log(`   🚫 VALIDATOR REJECT: ${cand.game} — price mismatch at ${cand.bookmaker}: cited ${citedPrice}, actual ${citedBookWrongPrice.price}`);
+      rejectedCandidates.add(ci);
+      supabase.from("pick_decision_log").insert({
+        game_id: game.id, sport: game.sport_key, game: cand.game,
+        pick: cand.pick, odds: cand.odds, bookmaker: cand.bookmaker,
+        confidence: cand.confidence,
+        odds_api_payload: game,
+        validator_result: "rejected",
+        final_decision: "rejected_validator",
+        rejection_reason: `Price mismatch at ${cand.bookmaker}: cited ${citedPrice}, actual ${citedBookWrongPrice.price} (tolerance ±${PRICE_TOLERANCE})`,
+      }).then(() => {}, () => {});
+      continue;
+    }
+
+    // Cited book doesn't have it, but another book does with acceptable price — auto-correct bookmaker
+    const bestMatch = matches.find((m) => m.exact) ?? matches[0];
+    if (bestMatch && Math.abs(bestMatch.price - citedPrice) <= PRICE_TOLERANCE) {
+      const original = cand.bookmaker;
+      cand.bookmaker = bestMatch.book;
+      cand.odds = String(bestMatch.price);
       correctedBookmakers.set(cand.game, original);
-      console.log(`   🔧 BOOKMAKER FIX: "${original}" → "${bestBook}" for ${cand.game}`);
+      console.log(`   🔧 BOOKMAKER FIX: "${original}" → "${bestMatch.book}" (price ${bestMatch.price}) for ${cand.game}`);
+    } else {
+      // Line exists at another book but price is too far off — reject
+      console.log(`   🚫 VALIDATOR REJECT: ${cand.game} — ${cand.bookmaker} doesn't offer ${cand.pick}, nearest is ${bestMatch?.book} @ ${bestMatch?.price} (too far from ${citedPrice})`);
+      rejectedCandidates.add(ci);
+      supabase.from("pick_decision_log").insert({
+        game_id: game.id, sport: game.sport_key, game: cand.game,
+        pick: cand.pick, odds: cand.odds, bookmaker: cand.bookmaker,
+        confidence: cand.confidence,
+        odds_api_payload: game,
+        validator_result: "rejected",
+        final_decision: "rejected_validator",
+        rejection_reason: `${cand.bookmaker} doesn't offer ${cand.pick}. Nearest: ${bestMatch?.book} @ ${bestMatch?.price} (cited ${citedPrice}, beyond ±${PRICE_TOLERANCE} tolerance)`,
+      }).then(() => {}, () => {});
     }
   }
+
+  // Remove rejected candidates
+  candidates = candidates.filter((_, i) => !rejectedCandidates.has(i));
 
   // ── Filter candidates ──
 
@@ -776,6 +895,12 @@ export async function generateAnalysisCard(
   }
 
   // Fallback: minimal single-game generation without ESPN context or feedback
+  // Hard gate: no bookmakers = no analysis
+  if ((game.bookmakers ?? []).length === 0) {
+    console.log(`   🚫 FILTERED (no bookmakers, single-game): ${game.home_team} vs ${game.away_team}`);
+    return null;
+  }
+
   const { default: Anthropic } = await import("@anthropic-ai/sdk");
   const client = new Anthropic({ apiKey });
   const sportKey = game.sport_key;
