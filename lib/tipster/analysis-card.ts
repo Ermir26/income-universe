@@ -114,9 +114,22 @@ function getLeagueName(key: string): string {
   return SPORT_LABELS[key] ?? key;
 }
 
+const TRUSTED_BOOKS = new Set([
+  "DraftKings", "FanDuel", "BetMGM", "Caesars", "PointsBet",
+  "BetRivers", "Bovada", "BetOnline", "Pinnacle", "Bet365",
+]);
+
 function formatOddsForPrompt(game: GameData): string {
   const lines: string[] = [];
-  for (const bm of (game.bookmakers ?? []).slice(0, 3)) {
+  const bookmakers = (game.bookmakers ?? [])
+    .filter((bm) => TRUSTED_BOOKS.has(bm.title))
+    .sort((a, b) => {
+      const ai = [...TRUSTED_BOOKS].indexOf(a.title);
+      const bi = [...TRUSTED_BOOKS].indexOf(b.title);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    })
+    .slice(0, 10);
+  for (const bm of bookmakers) {
     lines.push(`  ${bm.title}:`);
     for (const market of bm.markets) {
       for (const o of market.outcomes) {
@@ -432,7 +445,7 @@ Return ONLY a JSON array (no markdown, no explanation):
     "game": "Home Team vs Away Team",
     "pick": "Team Name -3.5",
     "odds": "-110",
-    "bookmaker": "best bookmaker from the odds above",
+    "bookmaker": "MUST be one of the exact book names listed in the Odds section for this game. Do not write a book name that does not appear in the Odds above. Do not attribute a line to a book that does not offer it.",
     "pickType": "${pickTypeHint}",
     "pool": "${pickTypeHint === "foundation" ? "safe" : "edge"}",
     "confidence": 72,
@@ -757,7 +770,7 @@ Return ONLY this JSON (no markdown):
 {
   "pick": "Team Name -3.5",
   "odds": "-110",
-  "bookmaker": "best bookmaker",
+  "bookmaker": "MUST be one of the exact book names listed in the Odds section for this game. Do not write a book name that does not appear in the Odds above.",
   "pickType": "${pickTypeHint}",
   "analysis": "3-4 sentences.",
   "form_summary": "W4",
