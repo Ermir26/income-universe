@@ -517,6 +517,47 @@ RULES:
 
   console.log(`   📊 Claude returned ${candidates.length} ${pickTypeHint} candidates`);
 
+  // ── Validate & auto-correct bookmaker attributions ──
+  for (const cand of candidates) {
+    const game = selectedGames.find((g) => {
+      const fwd = `${g.home_team} vs ${g.away_team}`;
+      const rev = `${g.away_team} vs ${g.home_team}`;
+      if (cand.game === fwd || cand.game === rev) return true;
+      const cl = cand.game.toLowerCase();
+      const hw = g.home_team.toLowerCase().split(/\s+/).filter((w: string) => w.length > 3);
+      const aw = g.away_team.toLowerCase().split(/\s+/).filter((w: string) => w.length > 3);
+      return hw.some((w: string) => cl.includes(w)) && aw.some((w: string) => cl.includes(w));
+    });
+    if (!game) continue;
+
+    const availableBooks = (game.bookmakers ?? [])
+      .filter((bm) => TRUSTED_BOOKS.has(bm.title))
+      .map((bm) => bm.title);
+
+    if (availableBooks.length > 0 && !availableBooks.includes(cand.bookmaker)) {
+      const original = cand.bookmaker;
+      // Try to find the book that actually offers the closest odds
+      const targetOdds = parseInt(cand.odds, 10);
+      let bestBook = availableBooks[0];
+      if (!isNaN(targetOdds)) {
+        let bestDiff = Infinity;
+        for (const bm of (game.bookmakers ?? []).filter((b) => TRUSTED_BOOKS.has(b.title))) {
+          for (const mkt of bm.markets) {
+            for (const o of mkt.outcomes) {
+              const diff = Math.abs(o.price - targetOdds);
+              if (diff < bestDiff) {
+                bestDiff = diff;
+                bestBook = bm.title;
+              }
+            }
+          }
+        }
+      }
+      cand.bookmaker = bestBook;
+      console.log(`   🔧 BOOKMAKER FIX: "${original}" → "${bestBook}" for ${cand.game}`);
+    }
+  }
+
   // ── Filter candidates ──
 
   // Fuzzy game matching — Claude might return names in different order or format
@@ -798,6 +839,33 @@ Be honest with ratings. Don't inflate.`,
     parsed = JSON.parse(jsonMatch[0]);
   } catch {
     return null;
+  }
+
+  // ── Validate & auto-correct bookmaker ──
+  const availableBooks = (game.bookmakers ?? [])
+    .filter((bm) => TRUSTED_BOOKS.has(bm.title))
+    .map((bm) => bm.title);
+
+  if (availableBooks.length > 0 && !availableBooks.includes(parsed.bookmaker)) {
+    const original = parsed.bookmaker;
+    const targetOdds = parseInt(parsed.odds, 10);
+    let bestBook = availableBooks[0];
+    if (!isNaN(targetOdds)) {
+      let bestDiff = Infinity;
+      for (const bm of (game.bookmakers ?? []).filter((b) => TRUSTED_BOOKS.has(b.title))) {
+        for (const mkt of bm.markets) {
+          for (const o of mkt.outcomes) {
+            const diff = Math.abs(o.price - targetOdds);
+            if (diff < bestDiff) {
+              bestDiff = diff;
+              bestBook = bm.title;
+            }
+          }
+        }
+      }
+    }
+    parsed.bookmaker = bestBook;
+    console.log(`   🔧 BOOKMAKER FIX (single): "${original}" → "${bestBook}" for ${game.home_team} vs ${game.away_team}`);
   }
 
   const scoring = calculateConfidence(parsed.factors, weights);
