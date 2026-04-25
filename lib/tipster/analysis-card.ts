@@ -1085,3 +1085,107 @@ export function formatWinnerMessage(card: {
     `🦈 Sharkline — sharkline.ai`
   );
 }
+
+// ─── Extracted validator for unit testing ───
+
+export interface ValidatorPick {
+  game: string;      // "Team A vs Team B"
+  pick: string;      // "Team A" (ML), "Over 8.5" (total), "Team A -3.5" (spread)
+  odds: string;      // "-150" (American odds as string)
+  bookmaker: string; // "DraftKings"
+}
+
+export type ValidatorResult =
+  | { status: "pass" }
+  | { status: "corrected"; newBookmaker: string; newOdds: string }
+  | { status: "rejected"; reason: string };
+
+/**
+ * Pure-function extraction of the validator logic from generateCandidates().
+ * Checks a single pick against the game's bookmaker data.
+ */
+export function validatePickAgainstPayload(
+  pick: ValidatorPick,
+  game: GameData,
+  trustedBooks: Set<string>,
+  priceTolerance: number = 5,
+): ValidatorResult {
+  const citedPrice = parseInt(pick.odds, 10);
+  const pickTrimmed = pick.pick.trim();
+  const ouMatch = pickTrimmed.match(/^(?:F5\s+)?(Over|Under)\s+([\d.]+)$/i);
+  const spreadMatch = pickTrimmed.match(/^(.+?)\s+([+-][\d.]+)$/);
+  const isDrawPick = pickTrimmed.toLowerCase() === "draw";
+  let citedLine: number | null = null;
+  let marketKey: string;
+  let sideMatch: (o: { name: string; point?: number }) => boolean;
+
+  if (ouMatch) {
+    citedLine = parseFloat(ouMatch[2]);
+    marketKey = "totals";
+    const side = ouMatch[1].toLowerCase();
+    sideMatch = (o) => o.name.toLowerCase() === (side === "over" ? "over" : "under");
+  } else if (isDrawPick) {
+    marketKey = "h2h";
+    sideMatch = (o) => o.name.toLowerCase() === "draw";
+  } else if (spreadMatch && Math.abs(parseFloat(spreadMatch[2])) <= 20) {
+    citedLine = parseFloat(spreadMatch[2]);
+    marketKey = "spreads";
+    const teamWord = spreadMatch[1].trim().toLowerCase();
+    const gameParts = pick.game.split(" vs ").map((t: string) => t.trim().toLowerCase());
+    const isHome = gameParts[0]?.includes(teamWord) || teamWord.includes(gameParts[0] ?? "");
+    sideMatch = (o) => {
+      const oName = o.name.toLowerCase();
+      return isHome
+        ? !!(gameParts[0] && (oName.includes(gameParts[0]) || gameParts[0].includes(oName)))
+        : !!(gameParts[1] && (oName.includes(gameParts[1]) || gameParts[1].includes(oName)));
+    };
+  } else {
+    marketKey = "h2h";
+    const teamName = pickTrimmed.replace(/\s+ML$/i, "").replace(/\s+[+-]\d{3,}$/, "").trim().toLowerCase();
+    const gameParts = pick.game.split(" vs ").map((t: string) => t.trim().toLowerCase());
+    const isHome = gameParts[0]?.includes(teamName) || teamName.includes(gameParts[0] ?? "");
+    sideMatch = (o) => {
+      const oName = o.name.toLowerCase();
+      return isHome
+        ? !!(gameParts[0] && (oName.includes(gameParts[0]) || gameParts[0].includes(oName)))
+        : !!(gameParts[1] && (oName.includes(gameParts[1]) || gameParts[1].includes(oName)));
+    };
+  }
+
+  type MatchResult = { book: string; price: number; line: number | null; exact: boolean };
+  const matches: MatchResult[] = [];
+
+  for (const bm of (game.bookmakers ?? []).filter((b) => trustedBooks.has(b.title))) {
+    for (const mkt of bm.markets) {
+      if (mkt.key !== marketKey) continue;
+      for (const o of mkt.outcomes) {
+        if (!sideMatch(o)) continue;
+        if (citedLine != null && o.point != null && o.point !== citedLine) continue;
+        if (citedLine != null && o.point == null) continue;
+        const priceDiff = isNaN(citedPrice) ? Infinity : Math.abs(o.price - citedPrice);
+        matches.push({ book: bm.title, price: o.price, line: o.point ?? null, exact: priceDiff <= priceTolerance });
+      }
+    }
+  }
+
+  if (matches.length === 0) {
+    return { status: "rejected", reason: `Line ${pick.pick} not offered by any trusted book. Market: ${marketKey}, cited line: ${citedLine}, cited price: ${citedPrice}` };
+  }
+
+  const citedBookMatch = matches.find((m) => m.book === pick.bookmaker && m.exact);
+  if (citedBookMatch) {
+    return { status: "pass" };
+  }
+
+  const citedBookWrongPrice = matches.find((m) => m.book === pick.bookmaker && !m.exact);
+  if (citedBookWrongPrice) {
+    return { status: "rejected", reason: `Price mismatch at ${pick.bookmaker}: cited ${citedPrice}, actual ${citedBookWrongPrice.price} (tolerance +/-${priceTolerance})` };
+  }
+
+  const bestMatch = matches.find((m) => m.exact) ?? matches[0];
+  if (bestMatch && Math.abs(bestMatch.price - citedPrice) <= priceTolerance) {
+    return { status: "corrected", newBookmaker: bestMatch.book, newOdds: String(bestMatch.price) };
+  }
+
+  return { status: "rejected", reason: `${pick.bookmaker} doesn't offer ${pick.pick}. Nearest: ${bestMatch?.book} @ ${bestMatch?.price} (cited ${citedPrice}, beyond +/-${priceTolerance} tolerance)` };
+}

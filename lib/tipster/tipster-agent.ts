@@ -1292,3 +1292,94 @@ export async function publishApprovedPick(
 
   return { ok: true };
 }
+
+// ─── Extracted ESPN odds parser for unit testing ───
+
+/**
+ * Parse ESPN odds data from a single competition into GameData-compatible bookmaker array.
+ * This is the nested-structure parser: moneyline.home.close.odds, pointSpread.home.close.line, etc.
+ * Extracted from fetchUpcomingGamesFromESPN for testability.
+ */
+export function parseESPNOddsData(
+  oddsData: Record<string, unknown>,
+  homeName: string,
+  awayName: string,
+): { bookmakers: GameData["bookmakers"]; providerName: string | null } {
+  const bookmakers: GameData["bookmakers"] = [];
+  if (!oddsData) return { bookmakers: [], providerName: null };
+
+  const markets: Array<{ key: string; outcomes: Array<{ name: string; price: number; point?: number }> }> = [];
+  const ml = (oddsData as Record<string, unknown>).moneyline as Record<string, unknown> | undefined;
+  const ps = (oddsData as Record<string, unknown>).pointSpread as Record<string, unknown> | undefined;
+  const tot = (oddsData as Record<string, unknown>).total as Record<string, unknown> | undefined;
+  const homeTeamOdds = (oddsData as Record<string, unknown>).homeTeamOdds as Record<string, unknown> | undefined;
+  const awayTeamOdds = (oddsData as Record<string, unknown>).awayTeamOdds as Record<string, unknown> | undefined;
+
+  // Helper to drill into nested odds
+  const drill = (obj: Record<string, unknown> | undefined, ...path: string[]): unknown => {
+    let cur: unknown = obj;
+    for (const p of path) {
+      if (cur == null || typeof cur !== "object") return undefined;
+      cur = (cur as Record<string, unknown>)[p];
+    }
+    return cur;
+  };
+
+  // Moneyline
+  const homeML = drill(ml, "home", "close", "odds") ?? drill(ml, "home", "open", "odds") ?? homeTeamOdds?.moneyLine;
+  const awayML = drill(ml, "away", "close", "odds") ?? drill(ml, "away", "open", "odds") ?? awayTeamOdds?.moneyLine;
+  if (homeML && awayML) {
+    const outcomes: Array<{ name: string; price: number; point?: number }> = [
+      { name: homeName, price: parseFloat(String(homeML)) },
+      { name: awayName, price: parseFloat(String(awayML)) },
+    ];
+    const drawML = drill(ml, "draw", "close", "odds") ?? drill(ml, "draw", "open", "odds") ?? (oddsData as Record<string, unknown>).drawOdds as Record<string, unknown> | undefined;
+    const drawMLValue = typeof drawML === "object" && drawML !== null ? (drawML as Record<string, unknown>).moneyLine : drawML;
+    if (drawMLValue) {
+      outcomes.push({ name: "Draw", price: parseFloat(String(drawMLValue)) });
+    }
+    markets.push({ key: "h2h", outcomes });
+  }
+
+  // Spread
+  const homeSpreadLine = drill(ps, "home", "close", "line") ?? drill(ps, "home", "open", "line");
+  const homeSpreadOdds = drill(ps, "home", "close", "odds") ?? drill(ps, "home", "open", "odds") ?? homeTeamOdds?.spreadOdds;
+  const awaySpreadLine = drill(ps, "away", "close", "line") ?? drill(ps, "away", "open", "line");
+  const awaySpreadOdds = drill(ps, "away", "close", "odds") ?? drill(ps, "away", "open", "odds") ?? awayTeamOdds?.spreadOdds;
+  if (homeSpreadLine && homeSpreadOdds) {
+    markets.push({
+      key: "spreads",
+      outcomes: [
+        { name: homeName, price: parseFloat(String(homeSpreadOdds)), point: parseFloat(String(homeSpreadLine)) },
+        { name: awayName, price: parseFloat(String(awaySpreadOdds || homeSpreadOdds)), point: parseFloat(String(awaySpreadLine || String(-parseFloat(String(homeSpreadLine))))) },
+      ],
+    });
+  }
+
+  // Totals
+  const overLine = drill(tot, "over", "close", "line") ?? drill(tot, "over", "open", "line");
+  const overOdds = drill(tot, "over", "close", "odds") ?? drill(tot, "over", "open", "odds") ?? (oddsData as Record<string, unknown>).overOdds;
+  const underLine = drill(tot, "under", "close", "line") ?? drill(tot, "under", "open", "line");
+  const underOdds = drill(tot, "under", "close", "odds") ?? drill(tot, "under", "open", "odds") ?? (oddsData as Record<string, unknown>).underOdds;
+  const overUnder = (oddsData as Record<string, unknown>).overUnder;
+  const totalLine = overLine ?? (overUnder ? String(overUnder) : null);
+  if (totalLine && overOdds) {
+    const parseTotalLine = (v: string) => parseFloat(String(v).replace(/^[ou]/i, ""));
+    markets.push({
+      key: "totals",
+      outcomes: [
+        { name: "Over", price: parseFloat(String(overOdds)), point: parseTotalLine(String(totalLine)) },
+        { name: "Under", price: parseFloat(String(underOdds || overOdds)), point: parseTotalLine(String(underLine || totalLine)) },
+      ],
+    });
+  }
+
+  let providerName: string | null = null;
+  if (markets.length > 0) {
+    const provider = (oddsData as Record<string, unknown>).provider as Record<string, unknown> | undefined;
+    providerName = (provider?.name as string) || "ESPN BET";
+    bookmakers!.push({ key: "espn", title: providerName, markets });
+  }
+
+  return { bookmakers, providerName };
+}
