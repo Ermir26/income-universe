@@ -1,36 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export const config = {
-  matcher: ["/admin/:path*"],
+  matcher: ["/dashboard/:path*"],
 };
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   // Allow login page through
-  if (pathname === "/admin/login") {
+  if (pathname === "/dashboard/login") {
     return NextResponse.next();
   }
 
-  // Allow admin API login/logout endpoints through (they handle their own auth)
+  // Allow dashboard API login/logout endpoints through (they handle their own auth)
   if (
-    pathname === "/api/admin/login" ||
-    pathname === "/api/admin/logout"
+    pathname === "/api/dashboard/login" ||
+    pathname === "/api/dashboard/logout"
   ) {
     return NextResponse.next();
   }
 
   const sessionCookie = request.cookies.get("admin_session");
   if (!sessionCookie?.value) {
-    return NextResponse.redirect(new URL("/admin/login", request.url));
+    return NextResponse.redirect(new URL("/dashboard/login", request.url));
   }
 
-  // Verify the token using the same logic as lib/admin/auth.ts
-  // We inline a lightweight check here since middleware runs in Edge Runtime
   const valid = await verifyTokenInMiddleware(sessionCookie.value);
   if (!valid) {
     const response = NextResponse.redirect(
-      new URL("/admin/login", request.url),
+      new URL("/dashboard/login", request.url),
     );
     response.cookies.delete("admin_session");
     return response;
@@ -51,8 +49,9 @@ async function verifyTokenInMiddleware(token: string): Promise<boolean> {
     const parsed = JSON.parse(payload);
     if (parsed.role !== "admin") return false;
 
+    // 24-hour expiry (matches auth.ts)
     const age = Date.now() - (parsed.iat ?? 0);
-    if (age > 7 * 24 * 60 * 60 * 1000) return false;
+    if (age > 24 * 60 * 60 * 1000) return false;
 
     const algorithm = { name: "HMAC", hash: "SHA-256" } as const;
     const encoder = new TextEncoder();

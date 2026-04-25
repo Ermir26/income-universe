@@ -1,5 +1,29 @@
 const ADMIN_PASSWORD = process.env.ADMIN_DASHBOARD_PASSWORD ?? "";
 const ALGORITHM = { name: "HMAC", hash: "SHA-256" } as const;
+const TOKEN_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// Validate password strength at import time
+if (
+  typeof process !== "undefined" &&
+  process.env.ADMIN_DASHBOARD_PASSWORD !== undefined &&
+  process.env.ADMIN_DASHBOARD_PASSWORD.length < 24
+) {
+  console.error(
+    "[ADMIN AUTH] ADMIN_DASHBOARD_PASSWORD must be at least 24 characters. Current length:",
+    process.env.ADMIN_DASHBOARD_PASSWORD.length,
+  );
+}
+
+export function validatePasswordStrength(): { ok: boolean; error?: string } {
+  const pw = process.env.ADMIN_DASHBOARD_PASSWORD;
+  if (!pw) return { ok: false, error: "ADMIN_DASHBOARD_PASSWORD is not set" };
+  if (pw.length < 24)
+    return {
+      ok: false,
+      error: `ADMIN_DASHBOARD_PASSWORD must be at least 24 characters (currently ${pw.length})`,
+    };
+  return { ok: true };
+}
 
 async function getSigningKey(): Promise<CryptoKey> {
   const encoder = new TextEncoder();
@@ -25,7 +49,6 @@ export async function createSessionToken(): Promise<string> {
   const sigHex = Array.from(new Uint8Array(signature))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
-  // token = base64(payload).sigHex
   const payloadB64 = btoa(payload);
   return `${payloadB64}.${sigHex}`;
 }
@@ -40,9 +63,9 @@ export async function verifySessionToken(token: string): Promise<boolean> {
     const parsed = JSON.parse(payload);
     if (parsed.role !== "admin") return false;
 
-    // Reject tokens older than 7 days
+    // 24-hour expiry
     const age = Date.now() - (parsed.iat ?? 0);
-    if (age > 7 * 24 * 60 * 60 * 1000) return false;
+    if (age > TOKEN_MAX_AGE_MS) return false;
 
     const key = await getSigningKey();
     const encoder = new TextEncoder();
@@ -58,4 +81,26 @@ export async function verifySessionToken(token: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// ── Rate limiter (in-memory, per-process) ──
+
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+const MAX_ATTEMPTS = 5;
+const WINDOW_MS = 60_000; // 1 minute
+
+export function checkRateLimit(ip: string): { allowed: boolean } {
+  const now = Date.now();
+  const entry = loginAttempts.get(ip);
+
+  if (!entry || now > entry.resetAt) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + WINDOW_MS });
+    return { allowed: true };
+  }
+
+  entry.count++;
+  if (entry.count > MAX_ATTEMPTS) {
+    return { allowed: false };
+  }
+  return { allowed: true };
 }

@@ -1,45 +1,8 @@
 "use client";
 
-import { useEffect, useState, FormEvent } from "react";
-import dynamic from "next/dynamic";
-
-const BankrollChart = dynamic(() => import("./BankrollChart"), { ssr: false });
-const SportChart = dynamic(() => import("./SportChart"), { ssr: false });
-const MonthlyChart = dynamic(() => import("./MonthlyChart"), { ssr: false });
+import { useEffect, useState, useCallback } from "react";
 
 // ─── Types ───
-
-interface Interlocks {
-  graded_picks: number;
-  graded_ok: boolean;
-  chain_coverage: number;
-  chain_ok: boolean;
-  last_30_win_rate: number;
-  last_30_ok: boolean;
-  reveal_ready: boolean;
-}
-
-interface Stats {
-  total: number;
-  wins: number;
-  losses: number;
-  pushes: number;
-  win_rate: number | null;
-  roi: number | null;
-  current_streak: number | null;
-  units_profit: number | null;
-  best_sport: { sport: string; win_rate: number; picks: number } | null;
-  by_sport: Array<{
-    sport: string;
-    picks: number;
-    wins: number;
-    losses: number;
-    win_rate: number;
-    roi: number;
-    units_pl: number;
-  }>;
-  interlocks?: Interlocks;
-}
 
 interface Pick {
   id: string;
@@ -49,495 +12,455 @@ interface Pick {
   game: string;
   pick: string;
   odds: string;
-  tier: string;
-  stake: number;
   confidence: number;
   result: string;
-  actual_result: string;
-  settled_at: string;
-  created_at: string;
-  tx_hash: string | null;
-  verified: boolean;
+  status: string;
+  actual_result: string | null;
+  game_time: string | null;
+  sent_at: string;
+  tier: string;
+  stake: number;
+  category: string;
+  bookmaker: string;
+  event_id: string | null;
 }
 
-interface BankrollEntry {
-  balance: number;
-  date: string;
+interface DashboardInterlocks {
+  graded_picks: number;
+  graded_ok: boolean;
+  chain_coverage: number;
+  chain_ok: boolean;
+  last_30_win_rate: number;
+  last_30_ok: boolean;
+  reveal_ready: boolean;
 }
 
-interface MonthlyPL {
-  month: string;
-  profit: number;
-  units: number;
+interface DashboardData {
+  picks: Pick[];
+  stats: {
+    weekTotal: number;
+    weekWins: number;
+    weekLosses: number;
+    weekPushes: number;
+    winRate: number;
+    totalSettled: number;
+    units: number;
+    streakCount: number;
+    streakType: string;
+  };
+  bySport: Array<{
+    sport: string;
+    picks: number;
+    wins: number;
+    losses: number;
+    pushes: number;
+    winRate: number;
+  }>;
+  interlocks?: DashboardInterlocks;
+  survival: {
+    costs: number;
+    subscribers: number;
+    revenue: number;
+    waitlist: number;
+    status: string;
+    totalSettled: number;
+  };
 }
+
+// ─── Pick Status Logic ───
+
+type PickStatus = "WON" | "LOST" | "PUSH" | "LIVE" | "UPCOMING" | "AWAITING" | "VOID";
+
+function getPickStatus(pick: Pick): PickStatus {
+  if (pick.result === "void") return "VOID";
+  if (pick.result === "won") return "WON";
+  if (pick.result === "lost") return "LOST";
+  if (pick.result === "push") return "PUSH";
+
+  // Pending — determine if live, upcoming, or awaiting
+  const now = Date.now();
+  const gameTime = pick.game_time ? new Date(pick.game_time).getTime() : null;
+
+  if (!gameTime || gameTime > now) return "UPCOMING";
+  const hoursSinceStart = (now - gameTime) / (1000 * 60 * 60);
+  if (hoursSinceStart < 4) return "LIVE";
+  return "AWAITING";
+}
+
+const STATUS_CONFIG: Record<PickStatus, { label: string; bg: string; text: string; border: string; pulse?: boolean }> = {
+  WON:      { label: "WON",      bg: "bg-green-500/20",  text: "text-green-400",  border: "border-l-green-500" },
+  LOST:     { label: "LOST",     bg: "bg-red-500/20",    text: "text-red-400",    border: "border-l-red-500" },
+  PUSH:     { label: "PUSH",     bg: "bg-yellow-500/20", text: "text-yellow-400", border: "border-l-yellow-500" },
+  LIVE:     { label: "LIVE",     bg: "bg-purple-500/20", text: "text-purple-400", border: "border-l-purple-500", pulse: true },
+  UPCOMING: { label: "UPCOMING", bg: "bg-blue-500/20",   text: "text-blue-400",   border: "border-l-blue-500" },
+  AWAITING: { label: "AWAITING", bg: "bg-orange-500/20", text: "text-orange-400", border: "border-l-orange-500" },
+  VOID:     { label: "VOID",     bg: "bg-gray-500/20",   text: "text-gray-500",   border: "border-l-gray-600" },
+};
+
+// ─── Filter Tabs ───
+
+type FilterTab = "all" | "settled" | "live" | "upcoming" | "void";
+
+function filterPicks(picks: Pick[], tab: FilterTab): Pick[] {
+  switch (tab) {
+    case "settled": return picks.filter((p) => ["won", "lost", "push"].includes(p.result));
+    case "live": return picks.filter((p) => getPickStatus(p) === "LIVE");
+    case "upcoming": return picks.filter((p) => getPickStatus(p) === "UPCOMING");
+    case "void": return picks.filter((p) => p.result === "void");
+    default: return picks;
+  }
+}
+
+function sortPicks(picks: Pick[]): Pick[] {
+  const order: Record<PickStatus, number> = { LIVE: 0, UPCOMING: 1, AWAITING: 2, WON: 3, LOST: 3, PUSH: 3, VOID: 4 };
+  return [...picks].sort((a, b) => {
+    const statusA = getPickStatus(a);
+    const statusB = getPickStatus(b);
+    const orderDiff = order[statusA] - order[statusB];
+    if (orderDiff !== 0) return orderDiff;
+    // Within same status group, sort by game_time or sent_at
+    const timeA = new Date(a.game_time || a.sent_at).getTime();
+    const timeB = new Date(b.game_time || b.sent_at).getTime();
+    if (statusA === "UPCOMING") return timeA - timeB; // soonest first
+    return timeB - timeA; // most recent first
+  });
+}
+
+// ─── Sport Emoji ───
 
 const SPORT_EMOJI: Record<string, string> = {
-  NBA: "🏀", NFL: "🏈", NHL: "🏒", MLB: "⚾", MMA: "🥊",
-  "Premier League": "⚽", EPL: "⚽", "La Liga": "⚽",
-  "Serie A": "⚽", Bundesliga: "⚽", "Ligue 1": "⚽",
-  "Champions League": "⚽", MLS: "⚽", Euroleague: "🏀",
+  soccer_epl: "⚽", soccer_spain_la_liga: "⚽", soccer_italy_serie_a: "⚽",
+  soccer_germany_bundesliga: "⚽", soccer_france_ligue_one: "⚽",
+  soccer_uefa_champs_league: "⚽", soccer_usa_mls: "⚽",
+  basketball_nba: "🏀", basketball_euroleague: "🏀",
+  icehockey_nhl: "🏒", americanfootball_nfl: "🏈", baseball_mlb: "⚾",
+  tennis_atp_monte_carlo_masters: "🎾", mma_mixed_martial_arts: "🥊",
 };
 
-const TIER_STYLE: Record<string, { emoji: string; cls: string }> = {
-  VALUE: { emoji: "✅", cls: "text-emerald-400 bg-emerald-500/15 border-emerald-500/30" },
-  "STRONG VALUE": { emoji: "🔥", cls: "text-orange-400 bg-orange-500/15 border-orange-500/30" },
-  MAXIMUM: { emoji: "💎", cls: "text-purple-400 bg-purple-500/15 border-purple-500/30" },
-};
+// ─── Dashboard Page ───
 
-const TG_LINK = "https://t.me/SharklineFree";
-
-// ─── Page ───
-
-const DASHBOARD_THRESHOLD = 50;
-
-export default function PublicDashboard() {
-  const [stats, setStats] = useState<Stats | null>(null);
-  const [picks, setPicks] = useState<Pick[]>([]);
-  const [bankroll, setBankroll] = useState<BankrollEntry[]>([]);
-  const [monthlyPL, setMonthlyPL] = useState<MonthlyPL[]>([]);
+export default function DashboardPage() {
+  const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [email, setEmail] = useState("");
-  const [wlStatus, setWlStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [activeTab, setActiveTab] = useState<FilterTab>("all");
 
-  useEffect(() => {
-    Promise.all([
-      fetch("/api/tipster/public/stats").then((r) => r.json()),
-      fetch("/api/tipster/public/picks").then((r) => r.json()),
-      fetch("/api/tipster/public/bankroll").then((r) => r.json()),
-    ])
-      .then(([s, p, b]) => {
-        setStats(s);
-        setPicks(p.picks ?? []);
-        setBankroll(b.bankroll ?? []);
-        setMonthlyPL(b.monthly_pl ?? []);
-        setLoading(false);
+  const fetchData = useCallback(() => {
+    fetch("/api/dashboard/overview")
+      .then((res) => res.json())
+      .then((d) => {
+        if (d.error) setError(d.error);
+        else { setData(d); setError(null); }
+        setLastUpdated(new Date());
       })
-      .catch(() => setLoading(false));
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
   }, []);
 
-  // Safety interlocks: reveal only when ALL conditions are met
-  const interlocks = stats?.interlocks;
-  const revealReady = interlocks?.reveal_ready ?? false;
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 60_000);
+    return () => clearInterval(interval);
+  }, [fetchData]);
 
-  if (!loading && !revealReady) {
-    return <TeaserPage settledCount={interlocks?.graded_picks ?? 0} email={email} setEmail={setEmail} wlStatus={wlStatus} setWlStatus={setWlStatus} />;
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: "#0a0a1a" }}>
+        <div className="text-xl text-gray-400">Loading dashboard...</div>
+      </div>
+    );
   }
 
-  async function submitWaitlist(e: FormEvent) {
-    e.preventDefault();
-    if (!email) return;
-    setWlStatus("loading");
-    try {
-      const r = await fetch("/api/tipster/waitlist", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, source: "public_dashboard" }),
-      });
-      setWlStatus(r.ok ? "done" : "error");
-    } catch {
-      setWlStatus("error");
-    }
+  if (error || !data) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: "#0a0a1a" }}>
+        <div className="text-red-400">Error: {error || "Failed to load"}</div>
+      </div>
+    );
   }
+
+  const { stats, picks, bySport, survival, interlocks } = data;
+  const filtered = sortPicks(filterPicks(picks, activeTab));
+  const winRateColor = stats.winRate > 55 ? "text-green-400" : stats.winRate < 50 ? "text-red-400" : "text-yellow-400";
+
+  const tabs: { key: FilterTab; label: string; count: number }[] = [
+    { key: "all", label: "All", count: picks.length },
+    { key: "settled", label: "Settled", count: picks.filter((p) => ["won", "lost", "push"].includes(p.result)).length },
+    { key: "live", label: "In Play", count: picks.filter((p) => getPickStatus(p) === "LIVE").length },
+    { key: "upcoming", label: "Upcoming", count: picks.filter((p) => getPickStatus(p) === "UPCOMING").length },
+    { key: "void", label: "Void", count: picks.filter((p) => p.result === "void").length },
+  ];
 
   return (
-    <div className="min-h-screen bg-[#080814] text-slate-200 antialiased">
-      <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(99,102,241,0.08)_0%,_transparent_50%)] pointer-events-none" />
+    <div className="min-h-screen text-white" style={{ background: "#0a0a1a" }}>
+      <div className="max-w-7xl mx-auto p-4 md:p-6 space-y-6">
 
-      {/* ═══ HERO ═══ */}
-      <section className="relative text-center px-5 pt-14 pb-10 max-w-3xl mx-auto">
-        <div className="text-4xl mb-2">⚡</div>
-        <h1 className="text-3xl sm:text-4xl md:text-5xl font-black tracking-tight bg-gradient-to-r from-indigo-400 via-blue-400 to-emerald-400 bg-clip-text text-transparent leading-tight mb-2">
-          Sharkline
-        </h1>
-        <p className="text-base sm:text-lg text-slate-400 mb-1">
-          The World&apos;s Most Transparent Sports Tipster
-        </p>
-        <p className="text-sm text-slate-500 mb-2">
-          Every pick tracked. Every result verified. Full analysis on every game.
-        </p>
-        <p className="text-xs text-slate-600 mb-6">
-          🔗 Every pick is hashed and timestamped on Polygon before kickoff
-        </p>
-        <a
-          href={TG_LINK}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-block px-7 py-3 bg-gradient-to-r from-indigo-600 to-blue-600 text-white rounded-xl font-bold hover:scale-[1.03] active:scale-[0.98] transition-transform shadow-lg shadow-indigo-500/20"
-        >
-          Join Free Channel →
-        </a>
-      </section>
-
-      {/* ═══ LIVE STATS BAR ═══ */}
-      <section className="relative max-w-3xl mx-auto mb-10 px-5">
-        {loading ? (
-          <div className="text-center text-slate-500 py-6">Loading...</div>
-        ) : stats && stats.total > 0 ? (
-          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
-            <Stat label="Total Picks" value={String(stats.total)} />
-            <Stat label="Wins" value={String(stats.wins)} hl />
-            <Stat label="Win Rate" value={stats.win_rate ? `${stats.win_rate}%` : "Tracking..."} hl={!!stats.win_rate} />
-            <Stat label="ROI" value={stats.roi ? `+${stats.roi}%` : "Tracking..."} hl={!!stats.roi} />
-            <Stat label="Units P/L" value={stats.units_profit ? `+${stats.units_profit}u` : "—"} hl={!!stats.units_profit} />
-            <Stat label="Streak" value={stats.current_streak ? `🔥 ${stats.current_streak}` : "—"} hl={!!stats.current_streak} />
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">
+            <span style={{ color: "#00d4ff" }}>🦈</span> Sharkline — Command Center
+          </h1>
+          <div className="flex items-center gap-3">
+            {lastUpdated && (
+              <span className="text-xs text-gray-500">
+                Updated {lastUpdated.toLocaleTimeString()}
+              </span>
+            )}
+            <button
+              onClick={fetchData}
+              className="px-3 py-1.5 text-xs rounded-lg border border-gray-700 hover:border-gray-500 text-gray-400 hover:text-white transition-colors"
+            >
+              ↻ Refresh
+            </button>
           </div>
-        ) : (
-          <div className="text-center py-6 bg-indigo-500/10 rounded-2xl border border-indigo-500/15">
-            <p className="text-slate-400">Picks dropping daily. Join to follow along.</p>
+        </div>
+
+        {/* Top Stats Row */}
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <StatCard label="This Week" value={`${stats.weekTotal} picks`} />
+          <StatCard
+            label="Record"
+            value={`${stats.weekWins}W-${stats.weekLosses}L-${stats.weekPushes}P`}
+          />
+          <StatCard
+            label="Win Rate"
+            value={`${stats.winRate}%`}
+            valueColor={winRateColor}
+          />
+          <StatCard
+            label="Units"
+            value={`${stats.units >= 0 ? "+" : ""}${stats.units}u`}
+            valueColor={stats.units >= 0 ? "text-green-400" : "text-red-400"}
+          />
+          <StatCard
+            label="50-Pick Threshold"
+            value={`${stats.totalSettled}/50`}
+            sub={stats.totalSettled >= 50 ? "Ready to launch" : `${50 - stats.totalSettled} more needed`}
+          />
+        </div>
+
+        {/* Dashboard Reveal Interlocks */}
+        {interlocks && !interlocks.reveal_ready && (
+          <div className="rounded-xl border border-yellow-600/50 p-4 space-y-2" style={{ background: "rgba(234,179,8,0.08)" }}>
+            <h3 className="text-sm font-semibold text-yellow-400">Public Dashboard Locked</h3>
+            <p className="text-xs text-gray-400">All interlocks must pass before /public reveals:</p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
+              <div className={interlocks.graded_ok ? "text-green-400" : "text-red-400"}>
+                {interlocks.graded_ok ? "PASS" : "FAIL"} Graded picks: {interlocks.graded_picks}/50
+              </div>
+              <div className={interlocks.chain_ok ? "text-green-400" : "text-red-400"}>
+                {interlocks.chain_ok ? "PASS" : "FAIL"} Blockchain coverage: {interlocks.chain_coverage}% (need 80%)
+              </div>
+              <div className={interlocks.last_30_ok ? "text-green-400" : "text-red-400"}>
+                {interlocks.last_30_ok ? "PASS" : "FAIL"} Last 30 win rate: {interlocks.last_30_win_rate}% (need 52%)
+              </div>
+            </div>
           </div>
         )}
-      </section>
+        {interlocks?.reveal_ready && (
+          <div className="rounded-xl border border-green-600/50 p-4" style={{ background: "rgba(34,197,94,0.08)" }}>
+            <span className="text-sm font-semibold text-green-400">Public dashboard is LIVE</span>
+            <span className="text-xs text-gray-400 ml-2">All interlocks passed</span>
+          </div>
+        )}
 
-      {/* ═══ RECENT RESULTS ═══ */}
-      {picks.length > 0 && (
-        <section className="relative max-w-3xl mx-auto mb-10 px-5">
-          <h2 className="text-xl font-bold mb-4 text-slate-100">Recent Results</h2>
-          <div className="flex flex-col gap-1.5">
-            {picks.slice(0, 20).map((p) => {
-              const tier = TIER_STYLE[p.tier] ?? TIER_STYLE.VALUE;
-              const isWin = p.result === "won";
-              const isLoss = p.result === "lost";
-              const rowBg = isWin
-                ? "bg-emerald-500/5 border-emerald-500/15"
-                : isLoss
-                  ? "bg-red-500/5 border-red-500/15"
-                  : "bg-white/[0.02] border-white/[0.06]";
-              const resultText = isWin ? "✅ WON" : isLoss ? "❌ LOST" : "➖ PUSH";
-              const resultColor = isWin ? "text-emerald-400" : isLoss ? "text-red-400" : "text-slate-400";
-              const time = p.settled_at
-                ? new Date(p.settled_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })
-                : "";
-
-              return (
-                <a
-                  key={p.id}
-                  href={`/public/pick/${p.id}`}
-                  className={`flex items-center justify-between px-3 py-2.5 rounded-xl border ${rowBg} hover:bg-white/[0.04] transition-colors`}
+        {/* Weekly Predictions — Main Feature */}
+        <div className="rounded-xl border border-gray-800 overflow-hidden" style={{ background: "#12122a" }}>
+          <div className="p-4 border-b border-gray-800">
+            <h2 className="text-lg font-semibold mb-3">Weekly Predictions</h2>
+            <div className="flex gap-2 flex-wrap">
+              {tabs.map((tab) => (
+                <button
+                  key={tab.key}
+                  onClick={() => setActiveTab(tab.key)}
+                  className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                    activeTab === tab.key
+                      ? "text-white border"
+                      : "text-gray-500 border border-transparent hover:text-gray-300"
+                  }`}
+                  style={activeTab === tab.key ? { borderColor: "#00d4ff", background: "rgba(0,212,255,0.1)" } : {}}
                 >
-                  <div className="flex items-center gap-2.5 flex-1 min-w-0">
-                    <span className="text-base shrink-0">{SPORT_EMOJI[p.sport] ?? "🏅"}</span>
-                    <div className="min-w-0">
-                      <div className="font-semibold text-sm truncate">{p.game}</div>
-                      <div className="text-slate-400 text-xs flex items-center gap-1.5">
-                        <span>{p.pick} ({p.odds})</span>
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${tier.cls}`}>
-                          {tier.emoji} {p.tier}
-                        </span>
-                        {p.tx_hash && (
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold border text-emerald-400 bg-emerald-500/15 border-emerald-500/30">
-                            🔗
+                  {tab.label} ({tab.count})
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {filtered.length === 0 ? (
+            <div className="p-8 text-center text-gray-500">No picks in this category</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-gray-500 text-xs uppercase tracking-wider border-b border-gray-800">
+                    <th className="text-left py-3 px-4">Sport</th>
+                    <th className="text-left py-3 px-2">Game</th>
+                    <th className="text-left py-3 px-2">Pick</th>
+                    <th className="text-right py-3 px-2">Odds</th>
+                    <th className="text-right py-3 px-2">Conf</th>
+                    <th className="text-center py-3 px-2">Status</th>
+                    <th className="text-left py-3 px-2">Result / Score</th>
+                    <th className="text-right py-3 px-4">Game Time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((pick) => {
+                    const status = getPickStatus(pick);
+                    const cfg = STATUS_CONFIG[status];
+                    const emoji = SPORT_EMOJI[pick.sport_key] || "🏅";
+                    const gameTime = pick.game_time
+                      ? new Date(pick.game_time).toLocaleString("en-US", {
+                          month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true,
+                        })
+                      : "—";
+
+                    return (
+                      <tr
+                        key={pick.id}
+                        className={`border-b border-gray-800/50 hover:bg-white/[0.02] border-l-4 ${cfg.border}`}
+                      >
+                        <td className="py-3 px-4 whitespace-nowrap">
+                          <span className="mr-1">{emoji}</span>
+                          <span className="text-gray-300">{pick.league || pick.sport}</span>
+                        </td>
+                        <td className="py-3 px-2 text-gray-200 max-w-[200px] truncate">{pick.game}</td>
+                        <td className="py-3 px-2 font-medium text-white whitespace-nowrap">{pick.pick}</td>
+                        <td className="py-3 px-2 text-right text-gray-300 font-mono text-xs">{pick.odds}</td>
+                        <td className="py-3 px-2 text-right">
+                          <span className={`font-mono text-xs ${
+                            pick.confidence >= 85 ? "text-purple-400" :
+                            pick.confidence >= 75 ? "text-orange-400" :
+                            "text-gray-400"
+                          }`}>
+                            {pick.confidence}
                           </span>
-                        )}
-                      </div>
+                        </td>
+                        <td className="py-3 px-2 text-center">
+                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${cfg.bg} ${cfg.text}`}>
+                            {cfg.pulse && <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />}
+                            {cfg.label}
+                          </span>
+                        </td>
+                        <td className="py-3 px-2 text-gray-400 text-xs max-w-[200px] truncate">
+                          {status === "VOID" && pick.actual_result
+                            ? pick.actual_result
+                            : pick.actual_result || "—"}
+                        </td>
+                        <td className="py-3 px-4 text-right text-gray-500 text-xs whitespace-nowrap">{gameTime}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Record by Sport — with Win % Progress Bars */}
+        <div className="rounded-xl border border-gray-800 p-4" style={{ background: "#12122a" }}>
+          <h2 className="text-lg font-semibold mb-3">Record by Sport</h2>
+          {bySport.length === 0 ? (
+            <div className="text-gray-500 text-sm">No settled picks yet</div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {[...bySport].sort((a, b) => b.winRate - a.winRate).map((s) => {
+                const barColor = s.winRate >= 60 ? "#22c55e" : s.winRate >= 50 ? "#eab308" : "#ef4444";
+                const emoji = SPORT_EMOJI[
+                  Object.keys(SPORT_EMOJI).find((k) =>
+                    s.sport.toLowerCase().includes(SPORT_EMOJI[k] === "⚽" ? "league" : s.sport.toLowerCase())
+                  ) || ""
+                ] || "🏅";
+                return (
+                  <div key={s.sport} className="rounded-lg border border-gray-800 p-4" style={{ background: "#0d0d22" }}>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-sm font-medium text-gray-200">{s.sport}</div>
+                      <span
+                        className="text-lg font-bold"
+                        style={{ color: barColor }}
+                      >
+                        {s.winRate}%
+                      </span>
+                    </div>
+                    {/* Win rate progress bar */}
+                    <div className="w-full h-2 rounded-full bg-gray-800 mb-2 overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all duration-500"
+                        style={{
+                          width: `${Math.min(s.winRate, 100)}%`,
+                          background: `linear-gradient(90deg, ${barColor}88, ${barColor})`,
+                        }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-semibold text-white">
+                        {s.wins}W-{s.losses}L
+                        {s.pushes > 0 && <span className="text-gray-500">-{s.pushes}P</span>}
+                      </span>
+                      <span className="text-xs text-gray-500">{s.picks} picks</span>
                     </div>
                   </div>
-                  <div className="text-right shrink-0 ml-2">
-                    <div className={`font-bold text-sm ${resultColor}`}>{resultText}</div>
-                    <div className="text-[10px] text-slate-500">{time}</div>
-                  </div>
-                </a>
-              );
-            })}
-          </div>
-        </section>
-      )}
-
-      {/* ═══ CHARTS ═══ */}
-      {(bankroll.length > 0 || (stats?.by_sport && stats.by_sport.length > 0)) && (
-        <section className="relative max-w-3xl mx-auto mb-10 px-5">
-          <h2 className="text-xl font-bold mb-4 text-slate-100">Performance</h2>
-          <div className="grid gap-4">
-            {bankroll.length > 2 && (
-              <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl p-4">
-                <h3 className="text-sm font-semibold text-slate-300 mb-3">Bankroll Growth</h3>
-                <BankrollChart data={bankroll} />
-              </div>
-            )}
-            {stats?.by_sport && stats.by_sport.length > 1 && (
-              <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl p-4">
-                <h3 className="text-sm font-semibold text-slate-300 mb-3">Win Rate by Sport</h3>
-                <SportChart data={stats.by_sport} />
-              </div>
-            )}
-            {monthlyPL.length > 0 && (
-              <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl p-4">
-                <h3 className="text-sm font-semibold text-slate-300 mb-3">Monthly P&L</h3>
-                <MonthlyChart data={monthlyPL} />
-              </div>
-            )}
-          </div>
-        </section>
-      )}
-
-      {/* ═══ SPORT BREAKDOWN TABLE ═══ */}
-      {stats?.by_sport && stats.by_sport.length > 0 && (
-        <section className="relative max-w-3xl mx-auto mb-10 px-5">
-          <h2 className="text-xl font-bold mb-4 text-slate-100">Sport Breakdown</h2>
-          <div className="overflow-x-auto rounded-2xl border border-white/[0.06]">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-white/[0.06] text-slate-400 text-xs">
-                  <th className="text-left px-3 py-2.5 font-medium">Sport</th>
-                  <th className="text-center px-2 py-2.5 font-medium">Picks</th>
-                  <th className="text-center px-2 py-2.5 font-medium">W</th>
-                  <th className="text-center px-2 py-2.5 font-medium">L</th>
-                  <th className="text-center px-2 py-2.5 font-medium">Win%</th>
-                  <th className="text-center px-2 py-2.5 font-medium">ROI</th>
-                  <th className="text-right px-3 py-2.5 font-medium">Units</th>
-                </tr>
-              </thead>
-              <tbody>
-                {stats.by_sport.map((s) => (
-                  <tr key={s.sport} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
-                    <td className="px-3 py-2.5 font-medium">
-                      {SPORT_EMOJI[s.sport] ?? "🏅"} {s.sport}
-                    </td>
-                    <td className="text-center px-2 py-2.5 text-slate-400">{s.picks}</td>
-                    <td className="text-center px-2 py-2.5 text-emerald-400">{s.wins}</td>
-                    <td className="text-center px-2 py-2.5 text-red-400">{s.losses}</td>
-                    <td className="text-center px-2 py-2.5">{s.win_rate}%</td>
-                    <td className={`text-center px-2 py-2.5 ${s.roi >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                      {s.roi >= 0 ? "+" : ""}{s.roi}%
-                    </td>
-                    <td className={`text-right px-3 py-2.5 font-semibold ${s.units_pl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                      {s.units_pl >= 0 ? "+" : ""}{s.units_pl}u
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
-
-      {/* ═══ PRICING ═══ */}
-      <PricingSection onNotify={submitWaitlistDirect} />
-
-      {/* ═══ WAITLIST ═══ */}
-      <section className="relative max-w-md mx-auto mb-10 px-5">
-        <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5 text-center">
-          <h3 className="font-bold text-base mb-1">Get Notified When VIP Launches</h3>
-          <p className="text-xs text-slate-400 mb-3">Early subscribers get a discount.</p>
-          {wlStatus === "done" ? (
-            <p className="py-2 text-emerald-400 font-semibold">✅ You&apos;re on the list!</p>
-          ) : (
-            <form onSubmit={submitWaitlist} className="flex gap-2">
-              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
-                placeholder="your@email.com" required
-                className="flex-1 px-3 py-2 bg-white/[0.06] border border-white/10 rounded-xl text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500/50" />
-              <button type="submit" disabled={wlStatus === "loading"}
-                className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-500 disabled:opacity-50">
-                {wlStatus === "loading" ? "..." : "Notify Me"}
-              </button>
-            </form>
-          )}
-        </div>
-      </section>
-
-      {/* ═══ FOOTER ═══ */}
-      <footer className="text-center py-6 border-t border-white/5 text-slate-500 text-sm px-5">
-        <p className="mb-1">🦈 Sharkline — sharkline.ai</p>
-        <div className="flex gap-3 justify-center mb-2">
-          <a href={TG_LINK} target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:underline">Telegram</a>
-        </div>
-        <p className="text-xs text-slate-600">
-          Gamble responsibly. 18+ (21+ in some jurisdictions). Past performance does not guarantee future results.
-        </p>
-      </footer>
-    </div>
-  );
-
-  async function submitWaitlistDirect(emailVal: string) {
-    setEmail(emailVal);
-    setWlStatus("loading");
-    try {
-      const r = await fetch("/api/tipster/waitlist", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: emailVal, source: "public_pricing" }),
-      });
-      setWlStatus(r.ok ? "done" : "error");
-    } catch {
-      setWlStatus("error");
-    }
-  }
-}
-
-// ─── Teaser Page (< 50 picks) ───
-
-function TeaserPage({ settledCount, email, setEmail, wlStatus, setWlStatus }: {
-  settledCount: number; email: string; setEmail: (v: string) => void;
-  wlStatus: "idle" | "loading" | "done" | "error"; setWlStatus: (v: "idle" | "loading" | "done" | "error") => void;
-}) {
-  const pct = Math.min(100, Math.round((settledCount / DASHBOARD_THRESHOLD) * 100));
-
-  async function submitWaitlist(e: FormEvent) {
-    e.preventDefault();
-    if (!email) return;
-    setWlStatus("loading");
-    try {
-      const r = await fetch("/api/tipster/waitlist", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, source: "teaser_page" }),
-      });
-      setWlStatus(r.ok ? "done" : "error");
-    } catch {
-      setWlStatus("error");
-    }
-  }
-
-  return (
-    <div className="min-h-screen bg-[#080814] text-slate-200 antialiased flex flex-col items-center justify-center px-5">
-      <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(99,102,241,0.08)_0%,_transparent_50%)] pointer-events-none" />
-      <div className="relative max-w-md w-full text-center">
-        <div className="text-4xl mb-3">⚡</div>
-        <h1 className="text-3xl sm:text-4xl font-black tracking-tight bg-gradient-to-r from-indigo-400 via-blue-400 to-emerald-400 bg-clip-text text-transparent leading-tight mb-2">
-          Sharkline
-        </h1>
-        <p className="text-lg text-slate-300 font-semibold mb-1">Building Our Verified Record</p>
-        <p className="text-sm text-slate-500 mb-8">
-          Every pick blockchain-timestamped before kickoff. Full transparent dashboard launches after {DASHBOARD_THRESHOLD} verified picks.
-        </p>
-
-        {/* Progress bar */}
-        <div className="mb-8">
-          <div className="flex justify-between text-xs text-slate-400 mb-1.5">
-            <span>{settledCount} picks verified</span>
-            <span>{DASHBOARD_THRESHOLD} target</span>
-          </div>
-          <div className="w-full h-3 bg-white/[0.06] rounded-full overflow-hidden">
-            <div
-              className="h-full bg-gradient-to-r from-indigo-500 to-emerald-500 rounded-full transition-all duration-500"
-              style={{ width: `${pct}%` }}
-            />
-          </div>
-          <p className="text-xs text-slate-500 mt-1.5">{pct}% complete</p>
-        </div>
-
-        {/* Waitlist */}
-        <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5 mb-6">
-          <h3 className="font-bold text-sm mb-1">Get Notified When Dashboard Launches</h3>
-          <p className="text-xs text-slate-400 mb-3">Early subscribers get a discount on VIP.</p>
-          {wlStatus === "done" ? (
-            <p className="py-2 text-emerald-400 font-semibold">You&apos;re on the list!</p>
-          ) : (
-            <form onSubmit={submitWaitlist} className="flex gap-2">
-              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
-                placeholder="your@email.com" required
-                className="flex-1 px-3 py-2 bg-white/[0.06] border border-white/10 rounded-xl text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500/50" />
-              <button type="submit" disabled={wlStatus === "loading"}
-                className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-500 disabled:opacity-50">
-                {wlStatus === "loading" ? "..." : "Notify Me"}
-              </button>
-            </form>
+                );
+              })}
+            </div>
           )}
         </div>
 
-        {/* CTA */}
-        <a
-          href={TG_LINK}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-block px-7 py-3 bg-gradient-to-r from-indigo-600 to-blue-600 text-white rounded-xl font-bold hover:scale-[1.03] active:scale-[0.98] transition-transform shadow-lg shadow-indigo-500/20 mb-6"
-        >
-          Join Free Channel →
-        </a>
+        {/* Survival Indicator */}
+        <div className="rounded-xl border border-gray-800 p-4" style={{ background: "#12122a" }}>
+          <h2 className="text-lg font-semibold mb-3">Survival Indicator</h2>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <div>
+              <div className="text-xs text-gray-500 uppercase">Monthly Costs</div>
+              <div className="text-lg font-bold text-red-400">${survival.costs}</div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500 uppercase">Subscribers</div>
+              <div className="text-lg font-bold">{survival.subscribers}</div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500 uppercase">Revenue</div>
+              <div className="text-lg font-bold">${survival.revenue}</div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500 uppercase">Waitlist</div>
+              <div className="text-lg font-bold" style={{ color: "#00d4ff" }}>{survival.waitlist}</div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500 uppercase">Status</div>
+              <div className={`text-lg font-bold ${
+                survival.status === "READY TO LAUNCH" ? "text-green-400" :
+                survival.status === "NEEDS IMPROVEMENT" ? "text-red-400" :
+                "text-yellow-400"
+              }`}>
+                {survival.status}
+              </div>
+              <div className="text-xs text-gray-600 mt-0.5">
+                {survival.totalSettled}/50 settled
+              </div>
+            </div>
+          </div>
+        </div>
 
-        <footer className="text-slate-600 text-xs mt-4">
-          <p>🦈 Sharkline — sharkline.ai</p>
-          <p className="mt-1">Gamble responsibly. 18+ (21+ in some jurisdictions).</p>
-        </footer>
+        {/* Footer */}
+        <div className="text-center text-gray-600 text-xs py-4">
+          🦈 Sharkline — Private Dashboard
+        </div>
       </div>
     </div>
   );
 }
 
-// ─── Pricing Section ───
+// ─── Components ───
 
-function PricingSection({ onNotify }: { onNotify: (email: string) => void }) {
-  return (
-    <section id="pricing" className="relative max-w-3xl mx-auto mb-10 px-5 scroll-mt-16">
-      <h2 className="text-2xl font-bold mb-2 text-center text-slate-100">Choose Your Edge</h2>
-      <p className="text-center text-xs text-slate-400 mb-6">Weekend and weekly passes. No contracts.</p>
-
-      <div className="grid sm:grid-cols-2 gap-4">
-        {/* VIP */}
-        <div className="rounded-2xl border border-slate-700 bg-slate-900/80 p-5">
-          <div className="text-center mb-4">
-            <div className="text-xl mb-1">⚡</div>
-            <h3 className="text-base font-bold text-slate-100">VIP</h3>
-          </div>
-          <ul className="text-[11px] text-slate-300 space-y-1 mb-4">
-            <li>✅ 8-10 daily picks across all sports</li>
-            <li>✅ Full 17-dimension analysis</li>
-            <li>✅ Confidence tiers and reasoning</li>
-            <li>✅ Live score updates</li>
-          </ul>
-          <PublicPriceTier label="Weekend" price={37} sub="One winning pick covers your pass" onNotify={onNotify} />
-          <PublicPriceTier label="Weekly" price={67} sub="All sports. All picks. Full analysis." onNotify={onNotify} />
-        </div>
-
-        {/* Method */}
-        <div className="relative rounded-2xl border-2 border-cyan-500/40 bg-gradient-to-b from-cyan-900/20 to-slate-900/80 p-5">
-          <div className="text-center mb-4">
-            <div className="text-xl mb-1">🦈</div>
-            <h3 className="text-base font-bold text-slate-100">Shark Method</h3>
-          </div>
-          <ul className="text-[11px] text-slate-300 space-y-1 mb-4">
-            <li>✅ Everything in VIP</li>
-            <li>✅ Curated top 2-3 picks only</li>
-            <li>✅ Exact unit staking instructions</li>
-            <li>✅ Bankroll &amp; exposure tracking</li>
-            <li>✅ &ldquo;No edge&rdquo; day protection</li>
-            <li>✅ Monthly performance reports</li>
-          </ul>
-          <PublicPriceTier label="Weekend" price={67} sub="The full system for the weekend slate" onNotify={onNotify} />
-          <PublicPriceTier label="Weekly" price={117} sub="Elite access. Curated picks. Bankroll protection." badge="MOST POPULAR" onNotify={onNotify} />
-        </div>
-      </div>
-    </section>
-  );
-}
-
-// ─── Small components ───
-
-function Stat({ label, value, hl = false }: { label: string; value: string; hl?: boolean }) {
-  return (
-    <div className={`px-2.5 py-3 rounded-xl text-center border ${hl ? "bg-indigo-500/10 border-indigo-500/20" : "bg-white/[0.02] border-white/[0.05]"}`}>
-      <div className={`text-lg sm:text-xl font-extrabold ${hl ? "text-indigo-300" : "text-slate-100"}`}>{value}</div>
-      <div className="text-[10px] text-slate-500 mt-0.5">{label}</div>
-    </div>
-  );
-}
-
-function PublicPriceTier({ label, price, sub, badge, onNotify }: {
-  label: string; price: number; sub: string; badge?: string;
-  onNotify: (email: string) => void;
+function StatCard({ label, value, sub, valueColor }: {
+  label: string; value: string; sub?: string; valueColor?: string;
 }) {
-  const [cardEmail, setCardEmail] = useState("");
-  const [show, setShow] = useState(false);
-
   return (
-    <div className={`relative rounded-xl border ${badge ? "border-cyan-500/40 bg-cyan-500/5" : "border-white/[0.08] bg-white/[0.02]"} p-3 mb-2`}>
-      {badge && <div className="absolute -top-2 left-1/2 -translate-x-1/2 bg-gradient-to-r from-cyan-600 to-indigo-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-full">{badge}</div>}
-      <div className="flex items-center justify-between mb-0.5">
-        <span className="text-xs font-semibold text-slate-300">{label}</span>
-        <span className="text-lg font-black text-white">${price}</span>
-      </div>
-      <p className="text-[10px] text-slate-500 mb-2">{sub}</p>
-      {show ? (
-        <div className="flex gap-1">
-          <input type="email" value={cardEmail} onChange={(e) => setCardEmail(e.target.value)} placeholder="your@email.com"
-            className="flex-1 px-2 py-1.5 bg-white/[0.06] border border-white/10 rounded-lg text-xs text-white placeholder:text-slate-500 focus:outline-none" />
-          <button onClick={() => onNotify(cardEmail)} className="px-2 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-semibold">Go</button>
-        </div>
-      ) : (
-        <button onClick={() => setShow(true)}
-          className="w-full py-1.5 rounded-lg font-semibold text-xs bg-slate-700/50 text-slate-300 border border-slate-600 hover:bg-slate-700 transition-colors">
-          Join Waitlist
-        </button>
-      )}
+    <div className="rounded-xl border border-gray-800 p-4" style={{ background: "#12122a" }}>
+      <div className="text-xs text-gray-500 uppercase tracking-wider">{label}</div>
+      <div className={`text-xl md:text-2xl font-bold mt-1 ${valueColor || "text-white"}`}>{value}</div>
+      {sub && <div className="text-xs text-gray-600 mt-1">{sub}</div>}
     </div>
   );
 }

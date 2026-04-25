@@ -2,25 +2,15 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { verifySessionToken } from "@/lib/admin/auth";
 import { createClient } from "@supabase/supabase-js";
+import { writeAuditLog } from "@/lib/admin/audit-log";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 
-const EDITABLE_FIELDS = new Set([
-  "line",
-  "odds",
-  "bookmaker",
-  "bet_type",
-  "side",
-  "channel",
-  "reasoning",
-]);
-
-export async function PATCH(
+export async function POST(
   request: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  // Auth check
   const cookieStore = await cookies();
   const session = cookieStore.get("admin_session");
   if (!session?.value || !(await verifySessionToken(session.value))) {
@@ -29,35 +19,26 @@ export async function PATCH(
 
   const { id } = await ctx.params;
 
-  let updates: Record<string, unknown> = {};
+  let reason = "";
   try {
     const body = await request.json();
-    updates = body as Record<string, unknown>;
+    reason = (body as { reason?: string }).reason ?? "";
   } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    // No body or invalid JSON
   }
 
-  // Filter to only allowed fields
-  const filteredUpdates: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(updates)) {
-    if (EDITABLE_FIELDS.has(key)) {
-      filteredUpdates[key] = value;
-    }
-  }
-
-  if (Object.keys(filteredUpdates).length === 0) {
+  if (!reason.trim()) {
     return NextResponse.json(
-      { error: "No valid fields to update. Allowed: " + Array.from(EDITABLE_FIELDS).join(", ") },
+      { error: "Rejection reason is required" },
       { status: 400 },
     );
   }
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-  // Verify pick exists and is a draft
   const { data: pick } = await supabase
     .from("picks")
-    .select("id, status")
+    .select("id, status, game, pick, odds, bookmaker")
     .eq("id", id)
     .single();
 
@@ -73,12 +54,20 @@ export async function PATCH(
 
   const { error } = await supabase
     .from("picks")
-    .update(filteredUpdates)
+    .update({ status: "rejected", rejection_reason: reason })
     .eq("id", id);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, message: `Pick ${id} updated.` });
+  await writeAuditLog(supabase, {
+    action: "pick_rejected",
+    target_type: "pick",
+    target_id: id,
+    before_value: pick,
+    after_value: { status: "rejected", rejection_reason: reason },
+  });
+
+  return NextResponse.json({ ok: true, message: `Pick ${id} rejected.` });
 }

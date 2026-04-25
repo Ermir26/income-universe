@@ -2,15 +2,25 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { verifySessionToken } from "@/lib/admin/auth";
 import { createClient } from "@supabase/supabase-js";
+import { writeAuditLog } from "@/lib/admin/audit-log";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 
-export async function POST(
+const EDITABLE_FIELDS = new Set([
+  "line",
+  "odds",
+  "bookmaker",
+  "bet_type",
+  "side",
+  "channel",
+  "reasoning",
+]);
+
+export async function PATCH(
   request: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  // Auth check
   const cookieStore = await cookies();
   const session = cookieStore.get("admin_session");
   if (!session?.value || !(await verifySessionToken(session.value))) {
@@ -19,27 +29,33 @@ export async function POST(
 
   const { id } = await ctx.params;
 
-  let reason = "";
+  let updates: Record<string, unknown> = {};
   try {
     const body = await request.json();
-    reason = (body as { reason?: string }).reason ?? "";
+    updates = body as Record<string, unknown>;
   } catch {
-    // No body or invalid JSON
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  if (!reason.trim()) {
+  const filteredUpdates: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(updates)) {
+    if (EDITABLE_FIELDS.has(key)) {
+      filteredUpdates[key] = value;
+    }
+  }
+
+  if (Object.keys(filteredUpdates).length === 0) {
     return NextResponse.json(
-      { error: "Rejection reason is required" },
+      { error: "No valid fields to update. Allowed: " + Array.from(EDITABLE_FIELDS).join(", ") },
       { status: 400 },
     );
   }
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-  // Verify pick exists and is a draft
   const { data: pick } = await supabase
     .from("picks")
-    .select("id, status")
+    .select("*")
     .eq("id", id)
     .single();
 
@@ -53,14 +69,28 @@ export async function POST(
     );
   }
 
+  // Snapshot before values for audit
+  const beforeValues: Record<string, unknown> = {};
+  for (const key of Object.keys(filteredUpdates)) {
+    beforeValues[key] = pick[key];
+  }
+
   const { error } = await supabase
     .from("picks")
-    .update({ status: "rejected", rejection_reason: reason })
+    .update(filteredUpdates)
     .eq("id", id);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, message: `Pick ${id} rejected.` });
+  await writeAuditLog(supabase, {
+    action: "pick_edited",
+    target_type: "pick",
+    target_id: id,
+    before_value: beforeValues,
+    after_value: filteredUpdates,
+  });
+
+  return NextResponse.json({ ok: true, message: `Pick ${id} updated.` });
 }
