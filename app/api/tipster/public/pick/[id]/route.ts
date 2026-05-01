@@ -31,7 +31,6 @@ export async function GET(
       game: pick.game,
       pick: pick.pick,
       odds: pick.odds,
-      bookmaker: pick.bookmaker,
       tier: pick.tier || pick.category || "VALUE",
       stake: pick.stake,
       confidence: pick.confidence,

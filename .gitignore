@@ -47,3 +47,6 @@ next-env.d.ts
 # IDE
 .vscode/
 .idea/
+
+# working notes / prompt drafts
+*_PROMPT.md

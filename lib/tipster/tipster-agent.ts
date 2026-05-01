@@ -6,12 +6,14 @@ import { getTier, MIN_CONFIDENCE } from "./tiers";
 import { calculateConfidence, loadWeights, type ScoringWeights } from "./scoring-engine";
 import { generateCandidates, generateAnalysisCard, formatWinnerMessage, TRUSTED_BOOKS, type AnalysisCard, type GameData } from "./analysis-card";
 import { recordBet } from "./bankroll";
+import { isBankrollTrackingActive } from "./bankroll-launch";
 import { hashPick, timestampOnChain, getPolygonScanUrl } from "./blockchain";
 import { enforceSportSafety } from "./safety";
 import { getActiveSportKeys, SPORT_CATEGORY_KEYS } from "./brand";
 import { getEstimatedDurationMinutes, SETTLEMENT_GRACE_MINUTES, SPORT_KEY_TO_ESPN } from "../sports-data/espn-leagues";
 import { crossCheckWithPinnacle } from "./pinnacle-cross-check";
 import { sendAdminAlert } from "../integrations/telegram";
+import { formatAmericanOdds, formatPickDisplay } from "./format-helpers";
 
 /** Parse pick string into structured bet fields */
 function parseBetFields(pickStr: string, game: string): { bet_type: string; line: number | null; side: string } {
@@ -219,7 +221,7 @@ export async function fetchUpcomingGames(
 // ESPN provider names discovered at runtime — added to TRUSTED_BOOKS dynamically
 const espnProviderNames = new Set<string>();
 
-async function fetchUpcomingGamesFromESPN(
+export async function fetchUpcomingGamesFromESPN(
   sportKeys: string[],
   hoursAhead: number = 24,
 ): Promise<GameData[]> {
@@ -702,16 +704,48 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
   finalCards.sort((a, b) => b.confidence - a.confidence);
   const liveCards = finalCards.filter((c) => !isPaperSport(c));
 
-  // Separate by pool
-  const safeCards = liveCards.filter((c) => c.pool === "safe");
-  const edgeCards = liveCards.filter((c) => c.pool === "edge" && !c.is_underdog_alert);
-  const underdogCard = liveCards.find((c) => c.is_underdog_alert);
-
-  // Channel rules — safe and edge are completely separate pools:
-  //   Safe  → "free"        (FREE channel only, never VIP/Method)
-  //   Edge  → "vip+method"  (VIP + Method — analysis + staking formats)
-  //   Underdog → "vip"      (VIP only — too volatile for Method bankroll)
+  // Tier allocation rule (Phase 3.1):
+  //   Top 2 non-underdog picks by confidence → "free,vip,method" (all channels)
+  //   Picks 3-N (non-underdog)               → "vip,method"      (VIP + Method only)
+  //   Underdog alerts (high volatility) route to VIP only by product decision
+  //     — see PM thread 2026-04-26.
+  //
+  // No volume cap — every pick that passes the validator lands as a draft.
+  // Operator controls volume via approve/reject in the dashboard.
+  const FREE_SLOTS = 2; // top N picks go to FREE + VIP + Method
   const METHOD_MIN_CONFIDENCE = 70;
+
+  // Build ranked channel assignments — underdog alerts don't count toward ranking
+  const nonUnderdogLive = liveCards.filter((c) => !c.is_underdog_alert);
+  const underdogLive = liveCards.filter((c) => c.is_underdog_alert);
+
+  // Method channel guard: unconfigured or duplicates VIP/FREE → strip from routing
+  const methodMisconfigured = !methodChannelId
+    || methodChannelId === vipChannelId
+    || methodChannelId === telegramChannelId;
+
+  if (methodMisconfigured && liveCards.length > 0) {
+    const reason = !methodChannelId
+      ? "TELEGRAM_METHOD_CHANNEL_ID is empty"
+      : `TELEGRAM_METHOD_CHANNEL_ID duplicates ${methodChannelId === vipChannelId ? "VIP" : "FREE"} channel`;
+    console.log(`   ⚠️ Method channel unconfigured: ${reason} — stripping method from routing`);
+    await sendAdminAlert(
+      `[Sharkline alert] <b>METHOD CHANNEL UNCONFIGURED</b>\n` +
+      `${reason}\n` +
+      `Picks not routed to Method this run. FREE and VIP routing unaffected.`,
+    );
+  }
+
+  // Pre-compute channel by card game_id for the insert loop
+  const channelByGameId = new Map<string, string>();
+  nonUnderdogLive.forEach((card, idx) => {
+    let ch = idx < FREE_SLOTS ? "free,vip,method" : "vip,method";
+    if (methodMisconfigured) ch = ch.replace(",method", "");
+    channelByGameId.set(card.game_id, ch);
+  });
+  underdogLive.forEach((card) => {
+    channelByGameId.set(card.game_id, "vip");
+  });
 
   // ── Get bankroll context for Method format ──
   let currentBankroll = 100;
@@ -721,6 +755,7 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
       const { data: bankrollData } = await supabase
         .from("bankroll_log")
         .select("balance")
+        .eq("voided", false)
         .order("created_at", { ascending: false })
         .limit(1)
         .single();
@@ -834,15 +869,8 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
       // Blockchain timestamp before saving
       const chain = await blockchainTimestamp(card);
 
-      // Channel assignment — pools never overlap between free and VIP/Method
-      let channel: string;
-      if (card.pool === "safe") {
-        channel = "free";
-      } else if (card.is_underdog_alert) {
-        channel = "vip";
-      } else {
-        channel = "vip+method";
-      }
+      // Channel assignment — rank-based (top 2 → all channels, rest → VIP+Method)
+      const channel = channelByGameId.get(card.game_id) ?? "vip,method";
 
       // Insert as DRAFT — admin must approve before publishing
       const { data: row } = await supabase.from("picks").insert({
@@ -948,8 +976,9 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
       const summary =
         `📊 <b>${picksSent} DRAFTS READY</b>\n` +
         `━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `Safe: ${safeCards.filter((c) => !isGameTooSoon(c.game_time)).length} | ` +
-        `Edge: ${edgeCards.filter((c) => !isGameTooSoon(c.game_time)).length}\n\n` +
+        `FREE+VIP+Method: ${Math.min(FREE_SLOTS, nonUnderdogLive.length)} | ` +
+        `VIP+Method only: ${Math.max(0, nonUnderdogLive.length - FREE_SLOTS)}` +
+        `${underdogLive.length > 0 ? ` | Underdog (VIP only): ${underdogLive.length}` : ""}\n\n` +
         `Bulk actions:\n` +
         `✅ <code>approve all</code>\n` +
         `❌ <code>reject all</code>`;
@@ -1061,15 +1090,36 @@ function formatKickoffTime(gameTime: string): string {
   return `${utc} / ${est}`;
 }
 
+// ── Resolve pick text: replace "Home"/"Away" with actual team names ──
+function resolvePickText(pick: string, game: string): string {
+  // If pick is exactly "Home" or "Away", resolve to team name
+  const pickLower = pick.toLowerCase().trim();
+  const teams = game.split(" vs ");
+  if (teams.length !== 2) return pick;
+  const home = teams[0].trim();
+  const away = teams[1].trim();
+  if (pickLower === "home") return home;
+  if (pickLower === "away") return away;
+  // For spreads: "Home +1.5" → "TeamName +1.5", "Away -1.5" → "TeamName -1.5"
+  const spreadMatch = pick.match(/^(Home|Away)\s+([+-][\d.]+)$/i);
+  if (spreadMatch) {
+    const team = spreadMatch[1].toLowerCase() === "home" ? home : away;
+    return `${team} ${spreadMatch[2]}`;
+  }
+  return pick;
+}
+
 // ── FREE CHANNEL: minimal, teaser, conversion-focused ──
 function formatFree(card: AnalysisCard): string {
   const emoji = getSportEmoji(card.sport_key);
+  const pickDisplay = resolvePickText(card.pick, card.game);
+  const oddsDisplay = formatAmericanOdds(card.odds);
   let html = `🦈 <b>FREE PICK</b>\n`;
   html += `📅 ${formatFullDate(card.game_time)}\n\n`;
-  html += `${emoji} ${card.league}\n`;
+  html += `${emoji} ${card.league || card.sport || "—"}\n`;
   html += `${card.game}\n`;
   html += `⏰ ${formatKickoffTime(card.game_time)}\n`;
-  html += `Pick: <b>${card.pick}</b> @ ${card.odds}\n\n`;
+  html += `Pick: <b>${pickDisplay}</b> @ ${oddsDisplay}\n\n`;
   html += `Result posted after the game.\n`;
   html += `🦈 Sharkline`;
   return html;
@@ -1081,8 +1131,10 @@ function formatFreeBatch(safeCards: AnalysisCard[], edgeCount: number): string {
   let html = `🦈 <b>FREE PICKS</b> — ${dateStr}\n\n`;
 
   for (const card of safeCards) {
+    const pickDisplay = resolvePickText(card.pick, card.game);
+    const oddsDisplay = formatAmericanOdds(card.odds);
     html += `🛡️ <b>FOUNDATION</b>\n`;
-    html += `${card.game} — <b>${card.pick}</b> @ ${card.odds}\n\n`;
+    html += `${card.game} — <b>${pickDisplay}</b> @ ${oddsDisplay}\n\n`;
   }
 
   if (edgeCount > 0) {
@@ -1095,6 +1147,8 @@ function formatFreeBatch(safeCards: AnalysisCard[], edgeCount: number): string {
 // ── VIP CHANNEL: full analysis, the sharp edge ──
 function formatVip(card: AnalysisCard): string {
   const emoji = getSportEmoji(card.sport_key);
+  const pickDisplay = resolvePickText(card.pick, card.game);
+  const oddsDisplay = formatAmericanOdds(card.odds);
   let html = "";
 
   if (card.is_sharpest) {
@@ -1103,12 +1157,12 @@ function formatVip(card: AnalysisCard): string {
     html += `🦈 <b>VIP EDGE PLAY</b>\n`;
   }
   html += `📅 ${formatFullDate(card.game_time)}\n\n`;
-  html += `${emoji} ${card.league}\n`;
+  html += `${emoji} ${card.league || card.sport || "—"}\n`;
   html += `${card.game}\n`;
   html += `⏰ ${formatKickoffTime(card.game_time)}\n`;
-  html += `Pick: <b>${card.pick}</b> @ ${card.odds}\n`;
+  html += `Pick: <b>${pickDisplay}</b> @ ${oddsDisplay}\n`;
   html += `Confidence: ${card.confidence}%\n`;
-  html += `Tier: <b>${card.tier.name}</b>\n\n`;
+  html += `Tier: <b>${card.tier?.name ?? "MANUAL"}</b>\n\n`;
   html += `📊 <b>Analysis:</b>\n`;
   html += `${card.analysis}\n\n`;
   if (card.is_sharpest) {
@@ -1121,12 +1175,14 @@ function formatVip(card: AnalysisCard): string {
 // VIP underdog alert format
 function formatVipUnderdogAlert(card: AnalysisCard): string {
   const emoji = getSportEmoji(card.sport_key);
+  const pickDisplay = resolvePickText(card.pick, card.game);
+  const oddsDisplay = formatAmericanOdds(card.odds);
   let html = `🐕 <b>UNDERDOG ALERT — OPTIONAL</b>\n`;
   html += `📅 ${formatFullDate(card.game_time)}\n\n`;
-  html += `${emoji} ${card.league}\n`;
+  html += `${emoji} ${card.league || card.sport || "—"}\n`;
   html += `${card.game}\n`;
   html += `⏰ ${formatKickoffTime(card.game_time)}\n`;
-  html += `Pick: <b>${card.pick}</b> @ ${card.odds}\n`;
+  html += `Pick: <b>${pickDisplay}</b> @ ${oddsDisplay}\n`;
   html += `Confidence: ${card.confidence}%\n\n`;
   html += `📊 <b>Why this dog has value:</b>\n`;
   html += `${card.analysis}\n\n`;
@@ -1138,21 +1194,27 @@ function formatVipUnderdogAlert(card: AnalysisCard): string {
 }
 
 // ── METHOD CHANNEL: the managed system ──
-function formatMethod(card: AnalysisCard, bankroll: number, exposedToday: number, systemMode?: string): string {
+function formatMethod(card: AnalysisCard, bankroll: number, exposedToday: number, systemMode?: string, bankrollLaunched?: boolean): string {
   const emoji = getSportEmoji(card.sport_key);
+  const pickDisplay = resolvePickText(card.pick, card.game);
+  const oddsDisplay = formatAmericanOdds(card.odds);
   const exposureWarning = exposedToday >= 6
     ? `\n⚠️ Exposure limit reached — no more picks today`
     : "";
 
   let html = `🦈 <b>SHARK METHOD</b>\n`;
   html += `📅 ${formatFullDate(card.game_time)}\n\n`;
-  html += `${emoji} ${card.league}\n`;
+  html += `${emoji} ${card.league || card.sport || "—"}\n`;
   html += `${card.game}\n`;
   html += `⏰ ${formatKickoffTime(card.game_time)}\n`;
-  html += `Pick: <b>${card.pick}</b> @ ${card.odds}\n`;
-  html += `Tier: <b>${card.tier.name}</b>\n\n`;
+  html += `Pick: <b>${pickDisplay}</b> @ ${oddsDisplay}\n`;
+  html += `Tier: <b>${card.tier?.name ?? "MANUAL"}</b>\n\n`;
   html += `📊 <b>STAKE:</b> ${card.stake}u\n`;
-  html += `💰 Bankroll: ${bankroll.toFixed(1)}u | Exposed: ${exposedToday.toFixed(1)}/6u\n\n`;
+  if (bankrollLaunched) {
+    html += `💰 Bankroll: ${bankroll.toFixed(1)}u | Exposed: ${exposedToday.toFixed(1)}/6u\n\n`;
+  } else {
+    html += `💰 Exposed: ${exposedToday.toFixed(1)}/6u\n\n`;
+  }
   html += `<b>Analysis:</b>\n`;
   html += `${card.analysis}\n`;
   if (systemMode === "recovery") {
@@ -1186,21 +1248,15 @@ export async function publishApprovedPick(
     return { ok: false, error: `Pick #${pickId} not found or not in draft status` };
   }
 
-  // Check if game starts too soon (30 min guard)
+  // Hard reject if game has already kicked off
   if (pick.game_time) {
     const gameTime = new Date(pick.game_time);
     const minsUntil = (gameTime.getTime() - Date.now()) / 60000;
-    if (minsUntil < 30) {
-      return { ok: false, error: `Pick #${pickId}: game starts in ${Math.round(minsUntil)} min (too soon)` };
+    if (minsUntil <= 0) {
+      const kickoffStr = gameTime.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
+      return { ok: false, error: `Cannot publish — kickoff was at ${kickoffStr}. Pick is now unpublishable.` };
     }
   }
-
-  // Update status to pending + mark approved
-  await supabase.from("picks").update({
-    status: "pending",
-    approved_at: new Date().toISOString(),
-    approved_by: adminId,
-  }).eq("id", pickId);
 
   // Build a card-like object from the pick row for formatting
   const card = {
@@ -1212,9 +1268,9 @@ export async function publishApprovedPick(
     odds: pick.odds,
     bookmaker: pick.bookmaker ?? "",
     confidence: pick.confidence ?? 0,
-    tier: getTier(pick.confidence ?? 0),
+    tier: getTier(pick.confidence ?? 0) ?? { name: "MANUAL", emoji: "✍️", stake: 1, color: "#64748b" },
     stake: parseFloat(pick.stake) || 1,
-    analysis: pick.reasoning ?? "",
+    analysis: pick.reasoning ?? pick.analysis ?? "",
     game_time: pick.game_time ?? new Date().toISOString(),
     game_id: pick.event_id ?? "",
     pool: pick.pool ?? "edge",
@@ -1223,7 +1279,7 @@ export async function publishApprovedPick(
     scoring: { factors: pick.scoring_factors ?? {}, weights: pick.scoring_weights ?? {}, breakdown: {} },
   } as unknown as AnalysisCard;
 
-  const channel = pick.channel ?? "vip";
+  const channelRaw = pick.channel ?? "vip";
   const chainInfo = {
     pick_hash: pick.pick_hash ?? "",
     tx_hash: pick.tx_hash ?? null,
@@ -1232,40 +1288,76 @@ export async function publishApprovedPick(
     verified: pick.verified ?? false,
   };
 
-  // Channel routing:
-  //   "free"       → FREE channel only (minimal format)
-  //   "vip"        → VIP channel only (full analysis — underdog alerts)
-  //   "vip+method" → VIP (analysis) + METHOD (staking/bankroll)
+  // Parse comma-separated channel field into set of targets
+  // Supports: "free", "vip", "method", "free,vip,method", "vip,method", legacy "vip+method"
+  const channelParts = new Set(
+    channelRaw.split(/[,+]/).map((s: string) => s.trim().toLowerCase()).filter(Boolean),
+  );
 
-  // ── Publish to FREE channel (safe picks only) ──
-  if (FREE_CH && BOT_TOKEN && channel === "free") {
+  const sendToFree = channelParts.has("free");
+  const sendToVip = channelParts.has("vip");
+  let sendToMethod = channelParts.has("method");
+
+  // Method channel guard: unconfigured or duplicate of another channel → skip + warn
+  const methodUnconfigured = !METHOD_CH || METHOD_CH === VIP_CH || METHOD_CH === FREE_CH;
+  if (sendToMethod && methodUnconfigured) {
+    const reason = !METHOD_CH ? "TELEGRAM_METHOD_CHANNEL_ID is empty" : `TELEGRAM_METHOD_CHANNEL_ID duplicates ${METHOD_CH === VIP_CH ? "VIP" : "FREE"} channel`;
+    console.log(`   ⚠️ Method channel skipped for pick #${pickId}: ${reason}`);
+    sendToMethod = false;
+  }
+
+  // Dedupe: if after resolution any two channels share the same chat ID, send once
+  const seenChatIds = new Set<string>();
+  const deduped = { free: false, vip: false, method: false };
+  if (sendToFree && FREE_CH) { seenChatIds.add(FREE_CH); deduped.free = true; }
+  if (sendToVip && VIP_CH && !seenChatIds.has(VIP_CH)) { seenChatIds.add(VIP_CH); deduped.vip = true; }
+  else if (sendToVip && VIP_CH && seenChatIds.has(VIP_CH)) { console.log(`   ⚠️ VIP channel ID ${VIP_CH} already targeted by another channel — deduped`); }
+  if (sendToMethod && METHOD_CH && !seenChatIds.has(METHOD_CH)) { seenChatIds.add(METHOD_CH); deduped.method = true; }
+  else if (sendToMethod && METHOD_CH && seenChatIds.has(METHOD_CH)) { console.log(`   ⚠️ Method channel ID ${METHOD_CH} already targeted by another channel — deduped`); }
+
+  // Validate config
+  if (deduped.free && (!FREE_CH || !BOT_TOKEN)) {
+    return { ok: false, error: `Cannot publish to FREE channel: missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHANNEL_ID env vars` };
+  }
+  if (deduped.vip && (!VIP_CH || !BOT_TOKEN)) {
+    return { ok: false, error: `Cannot publish to VIP channel: missing TELEGRAM_BOT_TOKEN or TELEGRAM_VIP_CHANNEL_ID env vars` };
+  }
+  if (!deduped.free && !deduped.vip && !deduped.method) {
+    return { ok: false, error: `No valid channels in "${channelRaw}" for pick #${pickId}` };
+  }
+
+  // Send to Telegram BEFORE advancing status — if any primary send fails, pick stays as draft
+  const sendErrors: string[] = [];
+
+  // ── Publish to FREE channel ──
+  if (deduped.free) {
     try {
       const freeHtml = formatFree(card);
       await sendTelegramHtml(freeHtml, BOT_TOKEN, FREE_CH);
     } catch (err) {
-      console.log(`   FREE publish failed for ${pickId}: ${(err as Error).message}`);
+      sendErrors.push(`FREE channel: ${(err as Error).message}`);
     }
   }
 
-  // ── Publish to VIP channel (edge + underdog) ──
-  if (VIP_CH && BOT_TOKEN && (channel === "vip" || channel === "vip+method")) {
+  // ── Publish to VIP channel ──
+  if (deduped.vip) {
     try {
       const vipFormatter = card.is_underdog_alert ? formatVipUnderdogAlert : formatVip;
       const vipHtml = appendChainBadgeToHtml(vipFormatter(card), chainInfo, card.game_time);
       await sendTelegramHtml(vipHtml, BOT_TOKEN, VIP_CH);
     } catch (err) {
-      console.log(`   VIP publish failed for ${pickId}: ${(err as Error).message}`);
+      sendErrors.push(`VIP channel: ${(err as Error).message}`);
     }
   }
 
-  // ── Publish to METHOD channel (edge picks with staking format, no underdog alerts) ──
-  if (METHOD_CH && BOT_TOKEN && channel === "vip+method") {
+  // ── Publish to METHOD channel ──
+  if (deduped.method && METHOD_CH) {
     try {
       let bankroll = 100;
       let exposedToday = 0;
       let systemMode = "standard";
       try {
-        const { data: bData } = await supabase.from("bankroll_log").select("balance").order("created_at", { ascending: false }).limit(1).single();
+        const { data: bData } = await supabase.from("bankroll_log").select("balance").eq("voided", false).order("created_at", { ascending: false }).limit(1).single();
         if (bData?.balance) bankroll = parseFloat(bData.balance);
       } catch { /* use default */ }
       try {
@@ -1279,15 +1371,33 @@ export async function publishApprovedPick(
         if (sysStatus?.mode) systemMode = sysStatus.mode;
       } catch { /* use default */ }
 
+      const bankrollLaunched = await isBankrollTrackingActive(supabase);
+
       const methodHtml = appendChainBadgeToHtml(
-        formatMethod(card, bankroll, exposedToday, systemMode),
+        formatMethod(card, bankroll, exposedToday, systemMode, bankrollLaunched),
         chainInfo,
         card.game_time,
       );
       await sendTelegramHtml(methodHtml, BOT_TOKEN, METHOD_CH);
     } catch (err) {
-      console.log(`   METHOD publish failed for ${pickId}: ${(err as Error).message}`);
+      sendErrors.push(`METHOD channel: ${(err as Error).message}`);
     }
+  }
+
+  // If any Telegram send failed, do NOT advance status — pick stays as draft
+  if (sendErrors.length > 0) {
+    return { ok: false, error: `Telegram send failed — pick remains as draft. ${sendErrors.join("; ")}` };
+  }
+
+  // All sends succeeded — now advance status to pending
+  const { error: updateError } = await supabase.from("picks").update({
+    status: "pending",
+    approved_at: new Date().toISOString(),
+    approved_by: adminId,
+  }).eq("id", pickId);
+
+  if (updateError) {
+    return { ok: false, error: `Telegram sent but status update failed: ${updateError.message}` };
   }
 
   return { ok: true };

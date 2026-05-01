@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { verifySessionToken } from "@/lib/admin/auth";
 import { createClient } from "@supabase/supabase-js";
-import { writeAuditLog } from "@/lib/admin/audit-log";
+import { setPickTerminalState } from "@/lib/admin/set-pick-terminal-state";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
@@ -52,22 +52,11 @@ export async function POST(
     );
   }
 
-  const { error } = await supabase
-    .from("picks")
-    .update({ status: "rejected", rejection_reason: reason })
-    .eq("id", id);
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  try {
+    await setPickTerminalState(supabase, id, "rejected", reason, "pick_rejected");
+  } catch (err) {
+    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
   }
-
-  await writeAuditLog(supabase, {
-    action: "pick_rejected",
-    target_type: "pick",
-    target_id: id,
-    before_value: pick,
-    after_value: { status: "rejected", rejection_reason: reason },
-  });
 
   return NextResponse.json({ ok: true, message: `Pick ${id} rejected.` });
 }

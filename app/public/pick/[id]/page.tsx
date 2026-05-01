@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { formatAmericanOdds } from "@/lib/tipster/format-helpers";
 
 interface PickDetail {
   id: string;
@@ -12,7 +13,7 @@ interface PickDetail {
   game: string;
   pick: string;
   odds: string;
-  bookmaker: string;
+  bookmaker?: string;
   tier: string;
   stake: number;
   confidence: number;
@@ -112,7 +113,7 @@ export default function PickPage() {
       ? new Date(pick.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })
       : "";
 
-  const shareText = `${pick.game} — ${pick.pick} (${pick.odds}) ${isWin ? "✅ Winner!" : ""}`;
+  const shareText = `${pick.game} — ${pick.pick} (${formatAmericanOdds(pick.odds)}) ${isWin ? "✅ Winner!" : ""}`;
 
   return (
     <div className="min-h-screen bg-[#080814] text-slate-200 antialiased">
@@ -146,11 +147,7 @@ export default function PickPage() {
             </div>
             <div>
               <span className="text-slate-500 text-xs">Odds</span>
-              <div className="font-semibold">{pick.odds}</div>
-            </div>
-            <div>
-              <span className="text-slate-500 text-xs">Bookmaker</span>
-              <div className="font-semibold">{pick.bookmaker || "—"}</div>
+              <div className="font-semibold">{formatAmericanOdds(pick.odds)}</div>
             </div>
             <div>
               <span className="text-slate-500 text-xs">Game Time</span>

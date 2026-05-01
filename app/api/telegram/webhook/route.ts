@@ -22,7 +22,7 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const VIP_CHANNEL_ID = process.env.TELEGRAM_VIP_CHANNEL_ID ?? "";
-const METHOD_CHANNEL_ID = process.env.TELEGRAM_METHOD_CHANNEL_ID ?? "-1003974071892";
+const METHOD_CHANNEL_ID = process.env.TELEGRAM_METHOD_CHANNEL_ID ?? "";
 const ADMIN_TELEGRAM_ID = process.env.ADMIN_TELEGRAM_ID ?? "";
 
 type UserTier = "free" | "vip" | "method";
@@ -684,7 +684,8 @@ async function handleReject(
     return;
   }
 
-  await supabase.from("picks").update({ status: "rejected" }).eq("id", pickId);
+  const { setPickTerminalState } = await import("@/lib/admin/set-pick-terminal-state");
+  await setPickTerminalState(supabase, pickId, "rejected", "Rejected via Telegram admin");
   await sendMessage(chatId, `❌ Pick rejected: ${pick.game} — ${pick.pick}`);
 }
 
@@ -785,20 +786,8 @@ async function handleBulkReject(
   chatId: number,
   supabase: AnySupabase,
 ): Promise<void> {
-  // Count drafts first, then reject
-  const { data: drafts } = await supabase
-    .from("picks")
-    .select("id")
-    .eq("status", "draft");
-
-  const draftCount = drafts?.length ?? 0;
-
-  if (draftCount > 0) {
-    await supabase
-      .from("picks")
-      .update({ status: "rejected" })
-      .eq("status", "draft");
-  }
+  const { rejectAllDrafts } = await import("@/lib/admin/set-pick-terminal-state");
+  const draftCount = await rejectAllDrafts(supabase, "Bulk rejected via Telegram admin");
 
   await sendMessage(chatId, `❌ Bulk reject: ${draftCount} drafts rejected.`);
 }

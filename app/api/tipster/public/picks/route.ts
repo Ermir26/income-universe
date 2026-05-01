@@ -34,7 +34,6 @@ export async function GET(request: Request) {
         game: p.game,
         pick: p.pick,
         odds: p.odds,
-        bookmaker: p.bookmaker,
         tier: p.tier || p.category || "VALUE",
         stake: p.stake,
         confidence: p.confidence,

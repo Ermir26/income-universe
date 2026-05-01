@@ -33,9 +33,16 @@ export async function GET(request: Request) {
     return NextResponse.json({ expired: 0 });
   }
 
-  // Mark as expired (rejected with reason)
+  // Mark as expired (rejected with reason) — sets both status AND result
   const ids = expiring.map((p) => p.id);
-  await supabase.from('picks').update({ status: 'rejected' }).in('id', ids);
+  const { setPicksTerminalStateBatch } = await import("@/lib/admin/set-pick-terminal-state");
+  await setPicksTerminalStateBatch(
+    supabase,
+    ids,
+    "rejected",
+    "Auto-expired: game starting within 30 minutes",
+    "pick_expired",
+  );
 
   // Notify admin
   if (ADMIN_TELEGRAM_ID && TELEGRAM_BOT_TOKEN) {

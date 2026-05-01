@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { isBankrollTrackingActive } from "@/lib/tipster/bankroll-launch";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
@@ -77,6 +78,8 @@ export async function GET() {
       .from("waitlist")
       .select("id", { count: "exact", head: true });
 
+    const bankrollActive = await isBankrollTrackingActive(supabase);
+
     return NextResponse.json(
       {
         totalPicks: total + pushes,
@@ -85,7 +88,7 @@ export async function GET() {
         pushes,
         winRate,
         units,
-        bankroll,
+        bankroll: bankrollActive ? bankroll : null,
         streak: streakType === "win" && streak >= 2 ? streak : null,
         streakType,
         bySport,
