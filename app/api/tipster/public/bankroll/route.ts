@@ -7,9 +7,16 @@ const supabase = createClient(
 );
 
 export async function GET() {
+  // Gate on bankroll launch
+  const { data: bState } = await supabase.from("bankroll_state").select("launch_timestamp").limit(1).single();
+  if (!bState?.launch_timestamp) {
+    return NextResponse.json({ tracking_active: false });
+  }
+
   const { data: entries } = await supabase
     .from("bankroll_log")
     .select("action, units, balance, created_at")
+    .eq("voided", false)
     .order("created_at", { ascending: true })
     .limit(500);
 

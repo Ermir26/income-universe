@@ -452,21 +452,21 @@ export async function updateResults() {
       const decOdds = americanToDecimal(pick.odds);
       const payout = +(stake * decOdds).toFixed(2);
       const { data: lastEntry } = await supabase.from("bankroll_log")
-        .select("balance").order("created_at", { ascending: false }).limit(1).single();
+        .select("balance").eq("voided", false).order("created_at", { ascending: false }).limit(1).single();
       const curBalance = lastEntry?.balance ?? 100;
       await supabase.from("bankroll_log").insert({
         pick_id: pick.id, action: "win", units: payout, balance: +(curBalance + payout).toFixed(2),
       });
     } else if (pick.result === "lost") {
       const { data: lastEntry } = await supabase.from("bankroll_log")
-        .select("balance").order("created_at", { ascending: false }).limit(1).single();
+        .select("balance").eq("voided", false).order("created_at", { ascending: false }).limit(1).single();
       const curBalance = lastEntry?.balance ?? 100;
       await supabase.from("bankroll_log").insert({
         pick_id: pick.id, action: "loss", units: 0, balance: curBalance,
       });
     } else if (pick.result === "push") {
       const { data: lastEntry } = await supabase.from("bankroll_log")
-        .select("balance").order("created_at", { ascending: false }).limit(1).single();
+        .select("balance").eq("voided", false).order("created_at", { ascending: false }).limit(1).single();
       const curBalance = lastEntry?.balance ?? 100;
       await supabase.from("bankroll_log").insert({
         pick_id: pick.id, action: "push", units: pick.stake, balance: +(curBalance + pick.stake).toFixed(2),

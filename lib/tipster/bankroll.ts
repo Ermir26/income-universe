@@ -15,6 +15,7 @@ export async function getCurrentBankroll(
   const { data } = await supabase
     .from("bankroll_log")
     .select("balance")
+    .eq("voided", false)
     .order("created_at", { ascending: false })
     .limit(1)
     .single() as { data: { balance: number } | null };
@@ -153,6 +154,7 @@ export async function getDailySummary(
   const { data: todayEntries } = await supabase
     .from("bankroll_log")
     .select("action, units")
+    .eq("voided", false)
     .gte("created_at", today.toISOString()) as { data: Array<{ action: string; units: number }> | null };
 
   const entries = todayEntries ?? [];

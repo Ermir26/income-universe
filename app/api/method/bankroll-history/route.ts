@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { isBankrollTrackingActive } from "@/lib/tipster/bankroll-launch";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
@@ -8,6 +9,10 @@ const supabase = createClient(
 
 export async function GET() {
   try {
+    // Gate on bankroll launch
+    if (!await isBankrollTrackingActive(supabase)) {
+      return NextResponse.json({ history: [], summary: null });
+    }
     const { data: picks } = await supabase
       .from("picks")
       .select("game, pick, result, profit, stake, sent_at")

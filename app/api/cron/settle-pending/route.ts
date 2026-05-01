@@ -7,6 +7,7 @@ import { revalidatePath } from 'next/cache';
 import { createClient } from '@supabase/supabase-js';
 import { fetchGameResult, type GameResult } from '@/lib/sports-data/fetch-game-result';
 import { getSystemStatus } from '@/lib/method/system-status';
+import { computeRecoveryTier, isBankrollTrackingActive } from '@/lib/tipster/bankroll-launch';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
@@ -280,9 +281,9 @@ export async function GET(request: Request) {
         settled_at: new Date().toISOString(),
       }).eq('id', pick.id);
 
-      // Bankroll log
+      // Bankroll log + bankroll_state update (atomic pair)
       const { data: lastEntry } = await supabase.from('bankroll_log')
-        .select('balance').order('created_at', { ascending: false }).limit(1).single();
+        .select('balance').eq('voided', false).order('created_at', { ascending: false }).limit(1).single();
       const curBalance = lastEntry?.balance ?? 100;
 
       if (grade === 'won') {
@@ -297,6 +298,31 @@ export async function GET(request: Request) {
         await supabase.from('bankroll_log').insert({
           pick_id: pick.id, action: 'push', units: 0, balance: curBalance,
         });
+      }
+
+      // Update bankroll_state if launched
+      try {
+        const { data: bState } = await supabase.from('bankroll_state')
+          .select('*').eq('id', 1).single();
+        if (bState?.launch_timestamp) {
+          const newUnits = grade === 'push'
+            ? bState.current_units
+            : +(bState.current_units + profit).toFixed(2);
+          const newPeak = Math.max(bState.peak_units ?? 0, newUnits);
+          const newDrawdown = newPeak > 0 ? +(1 - newUnits / newPeak).toFixed(4) : 0;
+          const newTier = computeRecoveryTier(newDrawdown);
+
+          await supabase.from('bankroll_state').update({
+            current_units: newUnits,
+            peak_units: newPeak,
+            drawdown_pct: newDrawdown,
+            recovery_tier: newTier,
+            last_settled_pick_id: pick.id,
+            last_updated: new Date().toISOString(),
+          }).eq('id', 1);
+        }
+      } catch {
+        // bankroll_state update is best-effort — don't block settlement
       }
 
       settled++;
@@ -429,27 +455,29 @@ export async function GET(request: Request) {
 
       // ── METHOD: full bankroll + exposure + method status ──
       if (METHOD_CHANNEL_ID) {
+        const settleBankrollActive = await isBankrollTrackingActive(supabase);
+        const balanceStr = settleBankrollActive ? ` | Balance: ${currentBalance.toFixed(1)}u` : '';
         let methodMsg: string;
         if (p.result === 'won') {
           const streakLabel = streakDir === 'win' ? ` | Streak: W${streakCount}` : '';
           methodMsg =
             `${resultEmoji} <b>WON</b> — ${p.game}\n` +
             `${emoji} ${p.pick} at ${p.odds}\n` +
-            `+${p.profit.toFixed(2)}u | Balance: ${currentBalance.toFixed(1)}u${streakLabel}\n` +
+            `+${p.profit.toFixed(2)}u${balanceStr}${streakLabel}\n` +
             `Method status: ${methodBadge}\n` +
             `🦈 #SharkMethod`;
         } else if (p.result === 'lost') {
           methodMsg =
             `${resultEmoji} <b>LOST</b> — ${p.game}\n` +
             `${emoji} ${p.pick} at ${p.odds}\n` +
-            `-${p.stake}u | Balance: ${currentBalance.toFixed(1)}u\n` +
+            `-${p.stake}u${balanceStr}\n` +
             `Method status: ${methodBadge}\n` +
             `🦈 #SharkMethod`;
         } else {
           methodMsg =
             `${resultEmoji} <b>PUSH</b> — ${p.game}\n` +
             `${emoji} ${p.pick} — No action, units returned.\n` +
-            `Balance: ${currentBalance.toFixed(1)}u\n` +
+            (settleBankrollActive ? `Balance: ${currentBalance.toFixed(1)}u\n` : '') +
             `🦈 #SharkMethod`;
         }
         await sendTelegram(methodMsg, METHOD_CHANNEL_ID);
@@ -458,7 +486,8 @@ export async function GET(request: Request) {
   }
 
   // ── Status change alerts (caution/recovery) — METHOD channel only ──
-  if (settledPicks.length > 0 && METHOD_CHANNEL_ID) {
+  // Only post bankroll-related alerts if tracking is launched
+  if (settledPicks.length > 0 && METHOD_CHANNEL_ID && await isBankrollTrackingActive(supabase)) {
     // Get fresh system status AFTER settlement
     const postStatus = await getSystemStatus(supabase);
 
@@ -551,8 +580,11 @@ export async function GET(request: Request) {
         );
       }
       if (METHOD_CHANNEL_ID) {
+        const streakBankrollActive = await isBankrollTrackingActive(supabase);
         await sendTelegram(
-          `🔥 <b>${alertStreak} WINS STRAIGHT</b>\nStreak: W${alertStreak} | Bankroll impact: +${streakImpact.toFixed(1)}u\nSystem: 🟢 Locked in.\n🦈 Sharkline`,
+          `🔥 <b>${alertStreak} WINS STRAIGHT</b>\nStreak: W${alertStreak}` +
+          (streakBankrollActive ? ` | Bankroll impact: +${streakImpact.toFixed(1)}u` : '') +
+          `\nSystem: 🟢 Locked in.\n🦈 Sharkline`,
           METHOD_CHANNEL_ID,
         );
       }

@@ -119,8 +119,12 @@ async function runTipsterForSports(sportKeys, label) {
 
 // ─── Bankroll summary ───
 async function postBankrollSummary() {
+  // Gate on bankroll launch — skip if not yet launched
+  const { data: bState } = await supabase.from("bankroll_state").select("launch_timestamp").limit(1).single();
+  if (!bState?.launch_timestamp) { console.log("   Bankroll tracking not yet launched — skipping"); return; }
+
   const { data: lastEntry } = await supabase.from("bankroll_log")
-    .select("balance").order("created_at", { ascending: false }).limit(1).single();
+    .select("balance").eq("voided", false).order("created_at", { ascending: false }).limit(1).single();
   const balance = lastEntry?.balance ?? 100;
   const pl = balance - 100;
   const roi = ((pl / 100) * 100).toFixed(1);
@@ -133,7 +137,7 @@ async function postBankrollSummary() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const { data: todayEntries } = await supabase.from("bankroll_log")
-    .select("action, units").gte("created_at", today.toISOString());
+    .select("action, units").eq("voided", false).gte("created_at", today.toISOString());
 
   const entries = todayEntries || [];
   const todayWins = entries.filter((e) => e.action === "win").length;
