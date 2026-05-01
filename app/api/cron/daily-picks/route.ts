@@ -14,6 +14,7 @@ import { runTipster, type TipsterResult } from '@/lib/tipster/tipster-agent';
 import { checkSportHealth } from '@/lib/tipster/safety';
 import { SPORT_CATEGORY_KEYS } from '@/lib/tipster/brand';
 import { getSystemStatus, getTodayExposure, MAX_DAILY_EXPOSURE } from '@/lib/method/system-status';
+import { isBankrollTrackingActive } from '@/lib/tipster/bankroll-launch';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
@@ -178,8 +179,8 @@ export async function GET(request: Request) {
       }).eq('id', 1);
       await log(supabase, 'recovery_mode_entered', { yesterdayPnl });
 
-      // Notify Method channel
-      if (METHOD_CHANNEL_ID && TELEGRAM_BOT_TOKEN) {
+      // Notify Method channel (only if bankroll tracking is launched)
+      if (METHOD_CHANNEL_ID && TELEGRAM_BOT_TOKEN && await isBankrollTrackingActive(supabase)) {
         await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -211,8 +212,8 @@ export async function GET(request: Request) {
         }).eq('id', 1);
         await log(supabase, 'recovery_mode_exited', { yesterdayPnl, twoDayAgoPnl });
 
-        // Notify Method channel
-        if (METHOD_CHANNEL_ID && TELEGRAM_BOT_TOKEN) {
+        // Notify Method channel (only if bankroll tracking is launched)
+        if (METHOD_CHANNEL_ID && TELEGRAM_BOT_TOKEN && await isBankrollTrackingActive(supabase)) {
           await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

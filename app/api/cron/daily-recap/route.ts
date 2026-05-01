@@ -4,6 +4,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { getSystemStatus } from '@/lib/method/system-status';
+import { isBankrollTrackingActive } from '@/lib/tipster/bankroll-launch';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
@@ -195,12 +196,13 @@ export async function GET(request: Request) {
   vipMsg += `🦈 Sharkline — on-chain before kickoff`;
 
   // ── METHOD channel: full bankroll + balance + system status ──
+  const bankrollActive = await isBankrollTrackingActive(supabase);
   const methodMsg =
     `📊 <b>SHARK METHOD</b> — ${dateStr}\n` +
     `━━━━━━━━━━━━━━━━━━━━━━\n` +
     `Record: ${wins}W-${losses}L\n` +
     `Day P/L: ${netUnits >= 0 ? '+' : ''}${netUnits.toFixed(1)}u\n` +
-    `Bankroll: ${currentBalance.toFixed(1)}u\n` +
+    (bankrollActive ? `Bankroll: ${currentBalance.toFixed(1)}u\n` : '') +
     `Monthly: ${monthProfit >= 0 ? '+' : ''}${monthProfit.toFixed(1)}u\n` +
     `System: ${methodBadge}\n\n` +
     `<i>${template}</i>\n` +

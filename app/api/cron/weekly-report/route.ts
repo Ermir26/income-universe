@@ -3,6 +3,7 @@
 
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { isBankrollTrackingActive } from '@/lib/tipster/bankroll-launch';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
@@ -112,11 +113,15 @@ export async function GET(request: Request) {
   const startOfYear = new Date(now.getUTCFullYear(), 0, 1);
   const weekNum = Math.ceil(((now.getTime() - startOfYear.getTime()) / 86400000 + startOfYear.getUTCDay() + 1) / 7);
 
+  const bankrollActive = await isBankrollTrackingActive(supabase);
+
   // ── FREE channel: record + ROI only, CTA ──
   const freeMsg =
     `📈 <b>WEEKLY REPORT</b> — Week ${weekNum}\n` +
     `Record: ${wins}W-${losses}L | ROI: ${roi}%\n\n` +
-    `🦈 Full breakdown + bankroll tracking → VIP from $37/wknd\n` +
+    (bankrollActive
+      ? `🦈 Full breakdown + bankroll tracking → VIP from $37/wknd\n`
+      : `🦈 Full breakdown → VIP from $37/wknd\n`) +
     `🦈 sharkline.ai`;
 
   // ── VIP channel: record + units + sport breakdown ──
@@ -143,7 +148,7 @@ export async function GET(request: Request) {
     `📈 <b>SHARK METHOD — Week ${weekNum} Report</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━━━\n` +
     `Record: ${wins}W-${losses}L\n` +
-    `Units: ${netUnits >= 0 ? '+' : ''}${netUnits.toFixed(1)}u | Balance: ${currentBalance.toFixed(1)}u\n` +
+    `Units: ${netUnits >= 0 ? '+' : ''}${netUnits.toFixed(1)}u` + (bankrollActive ? ` | Balance: ${currentBalance.toFixed(1)}u` : '') + `\n` +
     `ROI: ${roi}%\n\n`;
 
   if (sportEntries.length > 1) {

@@ -5,6 +5,58 @@ import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+const ODDS_API_KEY = process.env.ODDS_API_KEY || "";
+
+// Simple in-memory cache for Odds API status (5-minute TTL)
+let oddsApiStatusCache: {
+  status: "available" | "credits_exhausted" | "error" | "not_configured";
+  remaining?: string;
+  checkedAt: number;
+} | null = null;
+const ODDS_API_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+async function checkOddsApiStatus(): Promise<typeof oddsApiStatusCache> {
+  // Return cached if fresh
+  if (oddsApiStatusCache && Date.now() - oddsApiStatusCache.checkedAt < ODDS_API_CACHE_TTL) {
+    return oddsApiStatusCache;
+  }
+
+  if (!ODDS_API_KEY) {
+    oddsApiStatusCache = { status: "not_configured", checkedAt: Date.now() };
+    return oddsApiStatusCache;
+  }
+
+  try {
+    // Cheap call: fetch sports list (costs 0 credits)
+    const res = await fetch(
+      `https://api.the-odds-api.com/v4/sports/?apiKey=${ODDS_API_KEY}`,
+      { cache: "no-store", signal: AbortSignal.timeout(8000) },
+    );
+
+    const remaining = res.headers.get("x-requests-remaining") ?? undefined;
+
+    if (res.ok) {
+      // Check if remaining credits is 0 or negative (sports endpoint succeeds with 0 credits)
+      const remainingNum = remaining ? parseInt(remaining, 10) : null;
+      if (remainingNum !== null && remainingNum <= 0) {
+        oddsApiStatusCache = { status: "credits_exhausted", remaining: remaining ?? "0", checkedAt: Date.now() };
+      } else {
+        oddsApiStatusCache = { status: "available", remaining, checkedAt: Date.now() };
+      }
+    } else {
+      const body = await res.text().catch(() => "");
+      if (body.includes("OUT_OF_USAGE_CREDITS") || res.status === 401 || res.status === 429) {
+        oddsApiStatusCache = { status: "credits_exhausted", remaining: "0", checkedAt: Date.now() };
+      } else {
+        oddsApiStatusCache = { status: "error", checkedAt: Date.now() };
+      }
+    }
+  } catch {
+    oddsApiStatusCache = { status: "error", checkedAt: Date.now() };
+  }
+
+  return oddsApiStatusCache;
+}
 
 export async function GET() {
   const cookieStore = await cookies();
@@ -16,13 +68,15 @@ export async function GET() {
   const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
-  // All queries in parallel
+  // All queries in parallel (including Odds API status check)
   const [
     lastCronRes,
     crossChecksRes,
     errorsRes,
     picksStatusRes,
     decisionLogRes,
+    oddsApiStatus,
+    bankrollStateRes,
   ] = await Promise.all([
     // Last cron run
     supabase
@@ -53,6 +107,12 @@ export async function GET() {
     supabase
       .from("pick_decision_log")
       .select("final_decision"),
+
+    // Odds API status
+    checkOddsApiStatus(),
+
+    // Bankroll state
+    supabase.from("bankroll_state").select("*").eq("id", 1).single(),
   ]);
 
   // Process last cron
@@ -92,5 +152,7 @@ export async function GET() {
     picks_by_status: picksByStatus,
     decisions_by_result: decisionsByResult,
     cross_checks_by_result: ccByResult,
+    odds_api_status: oddsApiStatus,
+    bankroll_state: bankrollStateRes.data ?? null,
   });
 }
