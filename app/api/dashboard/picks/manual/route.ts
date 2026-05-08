@@ -34,6 +34,8 @@ interface ManualPickBody {
   reasoning: string;
   game_time: string;
   force_unverified?: boolean;
+  tier?: string;
+  stake?: number;
 }
 
 export async function POST(request: Request) {
@@ -287,6 +289,9 @@ export async function POST(request: Request) {
     line: lineNum,
     confidence: 0, // manual picks don't have system confidence
     event_id: body.game_id ?? null,
+    tier: body.tier ?? "MANUAL",
+    category: body.tier === "FOUNDATION" ? "foundation" : "standard",
+    stake: body.stake ?? 1,
   };
 
   const { data: inserted, error } = await supabase

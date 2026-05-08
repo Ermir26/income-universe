@@ -77,6 +77,7 @@ export async function GET() {
     decisionLogRes,
     oddsApiStatus,
     bankrollStateRes,
+    bankrollHistoryRes,
   ] = await Promise.all([
     // Last cron run
     supabase
@@ -113,6 +114,14 @@ export async function GET() {
 
     // Bankroll state
     supabase.from("bankroll_state").select("*").eq("id", 1).single(),
+
+    // Bankroll history (last 50 non-voided entries for sparkline)
+    supabase
+      .from("bankroll_log")
+      .select("balance, created_at")
+      .eq("voided", false)
+      .order("created_at", { ascending: true })
+      .limit(50),
   ]);
 
   // Process last cron
@@ -154,5 +163,9 @@ export async function GET() {
     cross_checks_by_result: ccByResult,
     odds_api_status: oddsApiStatus,
     bankroll_state: bankrollStateRes.data ?? null,
+    bankroll_history: (bankrollHistoryRes.data ?? []).map((r: { balance: number; created_at: string }) => ({
+      balance: Number(r.balance),
+      created_at: r.created_at,
+    })),
   });
 }

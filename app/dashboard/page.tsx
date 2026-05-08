@@ -91,6 +91,7 @@ interface HealthData {
     last_updated: string;
     notes: string | null;
   } | null;
+  bankroll_history?: Array<{ balance: number; created_at: string }>;
 }
 
 interface LiveLogRow {
@@ -588,18 +589,79 @@ function DraftCard({ draft, onApprove, onReject, onSave, onRefreshDrafts }: {
 
 // ── History Row ──
 
-function HistoryRow({ pick }: { pick: Pick }) {
+const VOIDABLE_STATUSES = new Set(["draft", "pending", "approved", "published"]);
+
+function HistoryRow({ pick, onVoided }: { pick: Pick; onVoided: () => void }) {
+  const [showVoidModal, setShowVoidModal] = useState(false);
+  const [voidReason, setVoidReason] = useState("");
+  const [voiding, setVoiding] = useState(false);
+
+  async function handleVoid() {
+    if (!voidReason.trim()) return;
+    setVoiding(true);
+    try {
+      const res = await fetch(`/api/dashboard/picks/${pick.id}/void`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: voidReason.trim() }),
+      });
+      if (res.ok) {
+        setShowVoidModal(false);
+        onVoided();
+      } else {
+        const data = await res.json();
+        alert(data.error ?? "Void failed");
+      }
+    } catch {
+      alert("Network error");
+    } finally {
+      setVoiding(false);
+    }
+  }
+
+  const canVoid = VOIDABLE_STATUSES.has(pick.status);
+
   return (
-    <tr className="border-b border-slate-800/50 hover:bg-slate-800/20 transition-colors">
-      <td className="px-3 py-3 text-xs text-slate-300 max-w-[200px] truncate">{pick.game}</td>
-      <td className="px-3 py-3 text-xs text-white font-medium max-w-[160px] truncate">{formatPickDisplay({ side: pick.side ?? pick.pick, bet_type: pick.bet_type ?? "h2h", game: pick.game, line: pick.line })}</td>
-      <td className="px-3 py-3 text-xs text-slate-300">{pick.odds != null ? formatAmericanOdds(pick.odds) : "\u2014"}</td>
-      <td className="px-3 py-3 text-xs text-slate-300">{pick.bookmaker ?? "\u2014"}</td>
-      <td className="px-3 py-3 text-xs text-slate-300">{pick.confidence ?? "\u2014"}</td>
-      <td className="px-3 py-3"><StatusBadge status={pick.status} /></td>
-      <td className="px-3 py-3 text-xs">{pick.result ? <StatusBadge status={pick.result} /> : <span className="text-slate-500">{"\u2014"}</span>}</td>
-      <td className="px-3 py-3 text-xs text-slate-400">{pick.created_at ? new Date(pick.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "\u2014"}</td>
-    </tr>
+    <>
+      <tr className="border-b border-slate-800/50 hover:bg-slate-800/20 transition-colors">
+        <td className="px-3 py-3 text-xs text-slate-300 max-w-[200px] truncate">{pick.game}</td>
+        <td className="px-3 py-3 text-xs text-white font-medium max-w-[160px] truncate">{formatPickDisplay({ side: pick.side ?? pick.pick, bet_type: pick.bet_type ?? "h2h", game: pick.game, line: pick.line })}</td>
+        <td className="px-3 py-3 text-xs text-slate-300">{pick.odds != null ? formatAmericanOdds(pick.odds) : "\u2014"}</td>
+        <td className="px-3 py-3 text-xs text-slate-300">{pick.bookmaker ?? "\u2014"}</td>
+        <td className="px-3 py-3 text-xs text-slate-300">{pick.confidence ?? "\u2014"}</td>
+        <td className="px-3 py-3"><StatusBadge status={pick.status} /></td>
+        <td className="px-3 py-3 text-xs">{pick.result ? <StatusBadge status={pick.result} /> : <span className="text-slate-500">{"\u2014"}</span>}</td>
+        <td className="px-3 py-3 text-xs text-slate-400">{pick.created_at ? new Date(pick.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "\u2014"}</td>
+        <td className="px-3 py-3 text-xs">
+          {canVoid && (
+            <button onClick={() => setShowVoidModal(true)}
+              className="rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-[10px] text-red-400 hover:bg-red-500/20 transition-colors">
+              Void
+            </button>
+          )}
+        </td>
+      </tr>
+      {showVoidModal && (
+        <tr><td colSpan={9} className="p-0">
+          <div className="border border-red-500/30 bg-slate-900 p-4 space-y-3">
+            <p className="text-sm text-red-400 font-medium">Void: {pick.game} — {pick.pick}</p>
+            <textarea value={voidReason} onChange={(e) => setVoidReason(e.target.value)} rows={2}
+              placeholder="Reason for voiding this pick (required)..."
+              className="w-full rounded-lg border border-slate-700 bg-slate-800/50 px-3 py-2 text-sm text-slate-200 placeholder-slate-500 outline-none focus:border-red-500" />
+            <div className="flex gap-2">
+              <button onClick={handleVoid} disabled={voiding || !voidReason.trim()}
+                className="rounded-lg bg-red-600 px-4 py-2 text-xs font-medium text-white hover:bg-red-500 disabled:opacity-50 transition-colors">
+                {voiding ? "Voiding..." : "Confirm Void"}
+              </button>
+              <button onClick={() => { setShowVoidModal(false); setVoidReason(""); }}
+                className="rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-300 hover:text-white transition-colors">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </td></tr>
+      )}
+    </>
   );
 }
 
@@ -737,6 +799,37 @@ function HealthTab({ health, loading }: { health: HealthData | null; loading: bo
                   <p className="text-slate-300 font-mono text-[10px]">{bs.last_settled_pick_id ? bs.last_settled_pick_id.slice(0, 8) : "\u2014"}</p>
                 </div>
               </div>
+              {/* Bankroll sparkline */}
+              {health.bankroll_history && health.bankroll_history.length >= 2 && (() => {
+                const points = health.bankroll_history;
+                const balances = points.map((p) => p.balance);
+                const min = Math.min(...balances);
+                const max = Math.max(...balances);
+                const range = max - min || 1;
+                const w = 280;
+                const h = 60;
+                const pad = 4;
+                const pathData = balances.map((b, i) => {
+                  const x = pad + (i / (balances.length - 1)) * (w - 2 * pad);
+                  const y = pad + (1 - (b - min) / range) * (h - 2 * pad);
+                  return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+                }).join(" ");
+                const last = balances[balances.length - 1];
+                const first = balances[0];
+                const color = last >= first ? "#22c55e" : "#ef4444";
+                return (
+                  <div className="mt-3">
+                    <p className="text-[10px] text-slate-500 mb-1">Balance History ({points.length} settlements)</p>
+                    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ maxHeight: 60 }}>
+                      <path d={pathData} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    <div className="flex justify-between text-[10px] text-slate-600">
+                      <span>{min.toFixed(1)}u</span>
+                      <span>{max.toFixed(1)}u</span>
+                    </div>
+                  </div>
+                );
+              })()}
               {bs.last_updated && (
                 <p className="text-[10px] text-slate-600 text-right">Updated: {new Date(bs.last_updated).toLocaleString()}</p>
               )}
@@ -928,6 +1021,8 @@ function NewPickModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
   const [price, setPrice] = useState("");
   const [bookmaker, setBookmaker] = useState("");
   const [channels, setChannels] = useState<Set<string>>(new Set(["free"]));
+  const [tier, setTier] = useState("MANUAL");
+  const [stake, setStake] = useState("1");
   const [reasoning, setReasoning] = useState("");
   const [kickoffTime, setKickoffTime] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -1065,6 +1160,8 @@ function NewPickModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
         reasoning: reasoning.trim(),
         game_time: new Date(kickoffTime).toISOString(),
         force_unverified: forceUnverified,
+        tier,
+        stake: parseFloat(stake),
       };
 
       const res = await fetch("/api/dashboard/picks/manual", {
@@ -1195,6 +1292,32 @@ function NewPickModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
                 <span className="text-slate-300 text-xs uppercase">{ch}</span>
               </label>
             ))}
+          </div>
+        </div>
+
+        {/* Tier & Stake */}
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Tier</label>
+            <select value={tier} onChange={(e) => {
+              const t = e.target.value;
+              setTier(t);
+              const defaults: Record<string, string> = { VALUE: "1", "STRONG VALUE": "1.5", MAXIMUM: "2", FOUNDATION: "1", MANUAL: "1" };
+              setStake(defaults[t] ?? "1");
+            }}
+              className="w-full rounded-lg border border-slate-700 bg-slate-800/50 px-3 py-2 text-sm text-slate-200 outline-none focus:border-blue-500">
+              <option value="MANUAL">MANUAL (1u)</option>
+              <option value="VALUE">VALUE (1u)</option>
+              <option value="STRONG VALUE">STRONG VALUE (1.5u)</option>
+              <option value="MAXIMUM">MAXIMUM (2u)</option>
+              <option value="FOUNDATION">FOUNDATION (1u)</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">Stake (units)</label>
+            <input type="number" value={stake} onChange={(e) => setStake(e.target.value)}
+              min="0.5" max="5" step="0.5"
+              className="w-full rounded-lg border border-slate-700 bg-slate-800/50 px-3 py-2 text-sm text-slate-200 outline-none focus:border-blue-500" />
           </div>
         </div>
 
@@ -1575,11 +1698,11 @@ export default function AdminDashboard() {
               <div className="overflow-x-auto rounded-xl border border-slate-800">
                 <table className="w-full">
                   <thead><tr className="border-b border-slate-800 bg-slate-900/50">
-                    {["Game", "Pick", "Odds", "Book", "Conf.", "Status", "Result", "Created"].map((h) => (
+                    {["Game", "Pick", "Odds", "Book", "Conf.", "Status", "Result", "Created", ""].map((h) => (
                       <th key={h} className="px-3 py-2.5 text-left text-xs font-medium text-slate-400">{h}</th>
                     ))}
                   </tr></thead>
-                  <tbody>{picks.map((p) => <HistoryRow key={p.id} pick={p} />)}</tbody>
+                  <tbody>{picks.map((p) => <HistoryRow key={p.id} pick={p} onVoided={fetchHistory} />)}</tbody>
                 </table>
               </div>
             )}
