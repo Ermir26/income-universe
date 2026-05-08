@@ -102,7 +102,7 @@ export default function Image() {
               letterSpacing: "1px",
             }}
           >
-            AI Sports Picks — Blockchain Verified
+            AI Sports Picks — On the Record
           </div>
           <div style={{ display: "flex", flexDirection: "row", gap: 24 }}>
             <div
@@ -147,8 +147,8 @@ export default function Image() {
                 backgroundColor: "rgba(99, 102, 241, 0.06)",
               }}
             >
-              <div style={{ display: "flex", fontSize: 32, fontWeight: 700, color: "#ffffff", marginBottom: 6 }}>On-Chain</div>
-              <div style={{ display: "flex", fontSize: 13, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "2px" }}>Verified</div>
+              <div style={{ display: "flex", fontSize: 32, fontWeight: 700, color: "#ffffff", marginBottom: 6 }}>Public</div>
+              <div style={{ display: "flex", fontSize: 13, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "2px" }}>Record</div>
             </div>
           </div>
         </div>

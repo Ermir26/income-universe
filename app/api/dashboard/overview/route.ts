@@ -103,27 +103,40 @@ export async function GET() {
     const survivalStatus = totalSettled < 50 ? "BUILDING RECORD" : winRate >= 55 ? "READY TO LAUNCH" : "NEEDS IMPROVEMENT";
 
     // ─── Dashboard reveal interlocks ───
-    const { data: chainCheck } = await supabase
-      .from("picks")
-      .select("tx_hash")
-      .in("result", ["won", "lost", "push"]);
+    // Decision log coverage cutoff: first date with reliable pick_decision_log writes
+    const LOG_COVERAGE_CUTOFF = "2026-05-04T00:00:00Z";
 
-    const chainPicks = chainCheck ?? [];
-    const withTxHash = chainPicks.filter((p) => p.tx_hash != null).length;
-    const chainCoverage = chainPicks.length > 0 ? +(withTxHash / chainPicks.length * 100).toFixed(1) : 0;
+    const [{ data: cutoffPicks }, { data: decisionLogs }] = await Promise.all([
+      supabase
+        .from("picks")
+        .select("id")
+        .in("result", ["won", "lost", "push"])
+        .gte("created_at", LOG_COVERAGE_CUTOFF),
+      supabase
+        .from("pick_decision_log")
+        .select("pick_id")
+        .gte("created_at", LOG_COVERAGE_CUTOFF),
+    ]);
+
+    const cutoffPicksList = cutoffPicks ?? [];
+    const loggedIds = new Set((decisionLogs ?? []).map((d: { pick_id: string }) => d.pick_id));
+    const withLog = cutoffPicksList.filter((p: { id: string }) => loggedIds.has(p.id)).length;
+    const logCoverage = cutoffPicksList.length > 0 ? +(withLog / cutoffPicksList.length * 100).toFixed(1) : 0;
 
     const last30 = wl.slice(0, 30);
     const last30Wins = last30.filter((p) => p.result === "won").length;
     const last30WinRate = last30.length > 0 ? +(last30Wins / last30.length * 100).toFixed(1) : 0;
 
+    // Operators see raw % regardless of sample size
     const interlocks = {
       graded_picks: totalSettled,
       graded_ok: totalSettled >= 50,
-      chain_coverage: chainCoverage,
-      chain_ok: chainCoverage >= 80,
+      log_coverage: logCoverage,
+      log_sample_size: cutoffPicksList.length,
+      log_ok: logCoverage >= 80,
       last_30_win_rate: last30WinRate,
       last_30_ok: last30WinRate >= 52,
-      reveal_ready: totalSettled >= 50 && chainCoverage >= 80 && last30WinRate >= 52,
+      reveal_ready: totalSettled >= 50 && logCoverage >= 80 && last30WinRate >= 52,
     };
 
     return NextResponse.json({

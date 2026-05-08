@@ -4,6 +4,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { isBankrollTrackingActive } from '@/lib/tipster/bankroll-launch';
+import { BRAND } from '@/lib/tipster/brand';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
@@ -141,7 +142,7 @@ export async function GET(request: Request) {
     vipMsg += `🔥 Pick of the week: ${bestPick.game} — ${bestPick.pick} at ${bestPick.odds} (+${parseFloat(bestPick.profit).toFixed(1)}u)\n`;
   }
   vipMsg += `\nMonth-to-date: ${monthProfit >= 0 ? '+' : ''}${monthProfit.toFixed(1)}u | ${monthROI}% ROI\n`;
-  vipMsg += `🦈 Sharkline — on-chain before kickoff`;
+  vipMsg += BRAND.footer;
 
   // ── METHOD channel: full report with balance + method status ──
   let methodMsg =

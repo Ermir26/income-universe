@@ -9,7 +9,7 @@ import { recordBet } from "./bankroll";
 import { isBankrollTrackingActive } from "./bankroll-launch";
 import { hashPick, timestampOnChain, getPolygonScanUrl } from "./blockchain";
 import { enforceSportSafety } from "./safety";
-import { getActiveSportKeys, SPORT_CATEGORY_KEYS } from "./brand";
+import { getActiveSportKeys, SPORT_CATEGORY_KEYS, BRAND } from "./brand";
 import { getEstimatedDurationMinutes, SETTLEMENT_GRACE_MINUTES, SPORT_KEY_TO_ESPN } from "../sports-data/espn-leagues";
 import { crossCheckWithPinnacle } from "./pinnacle-cross-check";
 import { sendAdminAlert } from "../integrations/telegram";
@@ -687,7 +687,7 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
     const gameDate = new Date(gameTime);
     const blockDate = chain.block_timestamp ?? new Date();
     const minsBefore = Math.max(0, Math.round((gameDate.getTime() - blockDate.getTime()) / 60000));
-    const badge = `\n🔗 Verified on-chain: ${chain.polygonscan_url}\n⏱ Timestamped ${minsBefore} min before kickoff`;
+    const badge = `\n📋 Pick receipt locked ${minsBefore} min before kickoff`;
     // Insert before the last line (🦈 Sharkline)
     const lines = html.split("\n");
     const lastLine = lines.pop();
@@ -1056,8 +1056,7 @@ function appendChainBadgeToHtml(html: string, chain: ChainInfo, gameTime: string
   const gameDate = new Date(gameTime);
   const blockDate = chain.block_timestamp ?? new Date();
   const minsBefore = Math.max(0, Math.round((gameDate.getTime() - blockDate.getTime()) / 60000));
-  const url = chain.polygonscan_url ?? (chain.tx_hash ? getPolygonScanUrl(chain.tx_hash) : "");
-  const badge = `\n🔗 Verified on-chain: ${url}\n⏱ Timestamped ${minsBefore} min before kickoff`;
+  const badge = `\n📋 Pick receipt locked ${minsBefore} min before kickoff`;
   const lines = html.split("\n");
   const lastLine = lines.pop();
   return lines.join("\n") + badge + "\n" + lastLine;
@@ -1121,7 +1120,7 @@ function formatFree(card: AnalysisCard): string {
   html += `⏰ ${formatKickoffTime(card.game_time)}\n`;
   html += `Pick: <b>${pickDisplay}</b> @ ${oddsDisplay}\n\n`;
   html += `Result posted after the game.\n`;
-  html += `🦈 Sharkline`;
+  html += BRAND.footer;
   return html;
 }
 
@@ -1140,7 +1139,7 @@ function formatFreeBatch(safeCards: AnalysisCard[], edgeCount: number): string {
   if (edgeCount > 0) {
     html += `💎 VIP has ${edgeCount} edge plays today → sharkline.ai\n`;
   }
-  html += `🦈 Sharkline`;
+  html += BRAND.footer;
   return html;
 }
 
@@ -1168,7 +1167,7 @@ function formatVip(card: AnalysisCard): string {
   if (card.is_sharpest) {
     html += `🔥 This is the one. Full conviction.\n`;
   }
-  html += `🦈 Sharkline — on-chain before kickoff`;
+  html += BRAND.footer;
   return html;
 }
 
@@ -1189,7 +1188,7 @@ function formatVipUnderdogAlert(card: AnalysisCard): string {
   html += `⚠️ OPTIONAL high-risk/high-reward play. Standard staking does NOT apply.\n`;
   html += `Suggested: 0.5u max (half a normal unit)\n`;
   html += `Only bet this if your bankroll can absorb the loss.\n`;
-  html += `🦈 Sharkline`;
+  html += BRAND.footer;
   return html;
 }
 
@@ -1221,7 +1220,7 @@ function formatMethod(card: AnalysisCard, bankroll: number, exposedToday: number
     html += `\n⚡ Recovery mode — reduced stakes active\n`;
   }
   html += `${exposureWarning}\n`;
-  html += `🦈 Sharkline — on-chain before kickoff`;
+  html += BRAND.footer;
   return html;
 }
 

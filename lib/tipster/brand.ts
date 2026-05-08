@@ -3,7 +3,9 @@
 
 export const BRAND = {
   name: "Sharkline",
-  tagline: "Sharkline — on-chain before kickoff",
+  emoji: "🦈",
+  tagline: "Sharkline — locked before kickoff, on the record after",
+  footer: "🦈 Sharkline — locked before kickoff, on the record after",
   url: "sharkline.ai",
   dashboardUrl: "sharkline.ai/public",
   voice: "analytical, confident, data-driven, never emotional",
@@ -26,7 +28,6 @@ export const BRAND = {
     method: { weekend: 67, weekly: 117 },
   },
   activeSports: (process.env.ACTIVE_SPORTS || "soccer,basketball").split(","),
-  footer: "🦈 Sharkline — sharkline.ai",
 } as const;
 
 /** Sport keys that map to each active sport category */

@@ -220,52 +220,34 @@ export default function PickPage() {
           </div>
         )}
 
-        {/* Blockchain Verification */}
-        {pick.tx_hash && (
+        {/* Pick Receipt */}
+        {pick.created_at && (
           <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-2xl p-5 mb-4">
             <div className="flex items-center gap-2 mb-3">
-              <span className="text-lg">🔗</span>
-              <h3 className="text-sm font-bold text-emerald-400">Blockchain Verified</h3>
-              {pick.verified && (
-                <span className="px-2 py-0.5 bg-emerald-500/20 border border-emerald-500/30 rounded-full text-[10px] font-bold text-emerald-400">
-                  VERIFIED
-                </span>
-              )}
+              <span className="text-lg">{"\u{1F4CB}"}</span>
+              <h3 className="text-sm font-bold text-emerald-400">Pick Receipt</h3>
+              <span className="px-2 py-0.5 bg-emerald-500/20 border border-emerald-500/30 rounded-full text-[10px] font-bold text-emerald-400">
+                ON RECORD
+              </span>
             </div>
             <div className="space-y-2 text-xs">
-              {pick.block_timestamp && (
-                <div>
-                  <span className="text-slate-500">Timestamped on Polygon: </span>
-                  <span className="text-slate-300">
-                    {new Date(pick.block_timestamp).toLocaleString("en-US", {
-                      month: "short", day: "numeric", year: "numeric",
-                      hour: "numeric", minute: "2-digit", hour12: true,
-                    })}
-                  </span>
-                  {pick.game_time && pick.block_timestamp && (() => {
-                    const mins = Math.round(
-                      (new Date(pick.game_time).getTime() - new Date(pick.block_timestamp).getTime()) / 60000
-                    );
-                    return mins > 0 ? (
-                      <span className="text-emerald-400 ml-1">({mins} min before kickoff)</span>
-                    ) : null;
-                  })()}
-                </div>
-              )}
-              {pick.pick_hash && (
-                <div>
-                  <span className="text-slate-500">Pick Hash: </span>
-                  <span className="text-slate-400 font-mono break-all">{pick.pick_hash}</span>
-                </div>
-              )}
-              <a
-                href={`https://polygonscan.com/tx/${pick.tx_hash}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-block mt-1 text-indigo-400 hover:underline font-semibold"
-              >
-                Verify on PolygonScan →
-              </a>
+              <div>
+                <span className="text-slate-500">Logged: </span>
+                <span className="text-slate-300">
+                  {new Date(pick.created_at).toLocaleString("en-US", {
+                    month: "short", day: "numeric", year: "numeric",
+                    hour: "numeric", minute: "2-digit", hour12: true,
+                  })}
+                </span>
+                {pick.game_time && (() => {
+                  const mins = Math.round(
+                    (new Date(pick.game_time).getTime() - new Date(pick.created_at).getTime()) / 60000
+                  );
+                  return mins > 0 ? (
+                    <span className="text-emerald-400 ml-1">({mins} min before kickoff)</span>
+                  ) : null;
+                })()}
+              </div>
             </div>
           </div>
         )}

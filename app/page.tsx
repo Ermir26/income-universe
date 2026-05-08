@@ -9,7 +9,7 @@ import Image from "next/image";
 import SportHeroCards from "@/components/graphics/SportHeroCards";
 import EdgeVisualization from "@/components/graphics/EdgeVisualization";
 import WinStreakGraphic from "@/components/graphics/WinStreakGraphic";
-import BlockchainProof from "@/components/graphics/BlockchainProof";
+// BlockchainProof component retained in repo but unwired from landing page
 import SharkMethod from "@/components/landing/SharkMethod";
 
 const PicksTable = dynamic(() => import("@/components/landing/PicksTable"), {
@@ -148,12 +148,12 @@ export default function SharklineLanding() {
               <span className="bg-gradient-to-r from-white via-white to-slate-400 bg-clip-text text-transparent">Sports Picks.</span>
               <br />
               <span className="bg-gradient-to-r from-indigo-400 via-cyan-400 to-emerald-400 bg-clip-text text-transparent animate-gradient-x bg-[length:200%_auto]">
-                Blockchain Verified.
+                On the Record.
               </span>
             </h1>
 
             <p className="text-lg text-slate-400 mb-6 max-w-lg leading-relaxed animate-fade-in-up animation-delay-200">
-              Our AI engine detects edges across 10+ sports. Every pick is timestamped on-chain before kickoff. Real odds. Real results. Real profit.
+              Our AI engine detects edges across 10+ sports. Every pick is payload-validated and logged before kickoff. Real odds. Real results. Real profit.
             </p>
 
             {/* Live stat badges */}
@@ -194,11 +194,6 @@ export default function SharklineLanding() {
             </div>
           </div>
         </div>
-      </section>
-
-      {/* ═══ BLOCKCHAIN PROOF ═══ */}
-      <section data-section="blockchain-proof" className="relative z-10 max-w-4xl mx-auto px-5 mb-16">
-        <BlockchainProof />
       </section>
 
       {/* ═══ LIVE PERFORMANCE DASHBOARD ═══ */}
@@ -247,10 +242,10 @@ export default function SharklineLanding() {
         {/* Picks table */}
         <PicksTable />
 
-        {/* Blockchain info */}
+        {/* Record info */}
         <div className="mt-6 text-center">
           <p className="text-xs text-slate-600">
-            {"\u26D3\uFE0F"} Every pick timestamped on Polygon blockchain before kickoff &middot; <a href="/public" className="text-indigo-400 hover:text-indigo-300 transition-colors">View full public record</a>
+            {"\u{1F4CB}"} Every pick logged with line, price, and bookmaker before kickoff &middot; <a href="/public" className="text-indigo-400 hover:text-indigo-300 transition-colors">View full public record</a>
           </p>
         </div>
       </section>
@@ -286,13 +281,13 @@ export default function SharklineLanding() {
           <EdgeCard
             color="purple"
             step={3}
-            title="Verify On-Chain"
-            desc="Pick hash written to Polygon before kickoff. Transparent, immutable, verifiable."
+            title="On the Record"
+            desc="Line, price, and bookmaker snapshot saved to the decision log before kickoff."
             visual={
               <div className="font-mono text-[10px] text-purple-400/70 mb-3 leading-relaxed">
-                tx: 0x8a2e...4f1c<br />
-                block: #58291037<br />
-                {"\u2713"} confirmed
+                pick: Lakers -3.5<br />
+                odds: -110 @ DraftKings<br />
+                {"\u2713"} logged
               </div>
             }
           />
@@ -333,7 +328,7 @@ export default function SharklineLanding() {
             <div className="text-center px-6">
               <div className="text-4xl mb-3">{"\u{1F512}"}</div>
               <h3 className="text-2xl font-black mb-2 text-white">Unlock VIP Picks</h3>
-              <p className="text-slate-400 mb-5 max-w-sm mx-auto">Get MAXIMUM confidence plays, full analysis cards, and blockchain-verified results.</p>
+              <p className="text-slate-400 mb-5 max-w-sm mx-auto">Get MAXIMUM confidence plays, full analysis cards, and payload-validated results.</p>
               <a href="#pricing" className="inline-block px-8 py-3.5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-xl font-bold hover:scale-[1.02] active:scale-[0.98] transition-transform shadow-lg shadow-purple-500/20">
                 View VIP Plans
               </a>
@@ -345,7 +340,7 @@ export default function SharklineLanding() {
       {/* ═══ TRUST SIGNALS ═══ */}
       <section className="relative z-10 max-w-5xl mx-auto px-5 mb-24">
         <div className="grid sm:grid-cols-3 gap-6">
-          <TrustCard icon={"\u26D3\uFE0F"} title="Blockchain Verified" desc="Every pick is timestamped on Polygon before the game starts. Impossible to fake." gradient="from-purple-500/10 to-indigo-500/10" border="border-purple-500/20" />
+          <TrustCard icon={"\u{1F4CB}"} title="On the Record" desc="Every pick logged with line, price, and bookmaker before kickoff. Nothing edited after the fact." gradient="from-purple-500/10 to-indigo-500/10" border="border-purple-500/20" />
           <TrustCard icon={"\u{1F916}"} title="AI-Powered Engine" desc="Machine learning model trained on thousands of historical games. No gut feelings." gradient="from-cyan-500/10 to-blue-500/10" border="border-cyan-500/20" />
           <TrustCard icon={"\u{1F4C8}"} title="Transparent Results" desc="Full public track record. Every win, every loss. No cherry-picking. No hiding." gradient="from-emerald-500/10 to-teal-500/10" border="border-emerald-500/20" />
         </div>
@@ -430,7 +425,7 @@ export default function SharklineLanding() {
           <div className="absolute inset-0 bg-gradient-to-r from-indigo-600/20 via-cyan-600/10 to-purple-600/20 animate-gradient-x bg-[length:200%_auto]" />
           <div className="relative text-center py-16 px-8">
             <h2 className="text-3xl sm:text-4xl font-black mb-3 text-white">Stop losing. Start winning.</h2>
-            <p className="text-slate-400 mb-8 max-w-md mx-auto">Free picks daily. Blockchain-verified results. No fluff, no fake screenshots.</p>
+            <p className="text-slate-400 mb-8 max-w-md mx-auto">Free picks daily. Every result on the record. No fluff, no fake screenshots.</p>
             <a id="cta-final-free" href={TELEGRAM_FREE} target="_blank" rel="noopener noreferrer"
               className="inline-block px-10 py-4 bg-gradient-to-r from-indigo-600 to-cyan-600 text-white rounded-2xl text-lg font-black hover:shadow-2xl hover:shadow-indigo-500/30 hover:scale-[1.02] active:scale-[0.98] transition-all duration-300">
               Join Sharkline Free

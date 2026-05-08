@@ -28,8 +28,9 @@ interface Pick {
 interface DashboardInterlocks {
   graded_picks: number;
   graded_ok: boolean;
-  chain_coverage: number;
-  chain_ok: boolean;
+  log_coverage: number;
+  log_sample_size: number;
+  log_ok: boolean;
   last_30_win_rate: number;
   last_30_ok: boolean;
   reveal_ready: boolean;
@@ -249,8 +250,12 @@ export default function DashboardPage() {
               <div className={interlocks.graded_ok ? "text-green-400" : "text-red-400"}>
                 {interlocks.graded_ok ? "PASS" : "FAIL"} Graded picks: {interlocks.graded_picks}/50
               </div>
-              <div className={interlocks.chain_ok ? "text-green-400" : "text-red-400"}>
-                {interlocks.chain_ok ? "PASS" : "FAIL"} Blockchain coverage: {interlocks.chain_coverage}% (need 80%)
+              <div className={interlocks.log_sample_size >= 20
+                ? (interlocks.log_ok ? "text-green-400" : "text-red-400")
+                : "text-slate-500"}>
+                {interlocks.log_sample_size >= 20
+                  ? `${interlocks.log_ok ? "PASS" : "FAIL"} Decision log coverage: ${interlocks.log_coverage}% (need 80%)`
+                  : "Logging active — building sample"}
               </div>
               <div className={interlocks.last_30_ok ? "text-green-400" : "text-red-400"}>
                 {interlocks.last_30_ok ? "PASS" : "FAIL"} Last 30 win rate: {interlocks.last_30_win_rate}% (need 52%)

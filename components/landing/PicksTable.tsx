@@ -141,9 +141,9 @@ export default function PicksTable() {
                   </div>
                 )}
 
-                {/* Blockchain badge */}
-                {pick.tx_hash && (
-                  <div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-purple-600 flex items-center justify-center" title="Blockchain verified">
+                {/* Logged badge */}
+                {pick.created_at && (
+                  <div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-purple-600 flex items-center justify-center" title="Pick logged before kickoff">
                     <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                     </svg>

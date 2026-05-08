@@ -15,19 +15,19 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL("https://sharkline.vercel.app"),
   title: {
-    default: "Sharkline — AI Sports Picks with Blockchain-Verified Record",
+    default: "Sharkline — AI Sports Picks, On the Record",
     template: "%s | Sharkline",
   },
   description:
-    "AI-powered sports betting picks verified on Polygon blockchain. Track record proven on-chain. Free Telegram channel + VIP subscription with edge detection using Pinnacle sharp lines, reverse line movement, and closing line value.",
+    "AI-powered sports betting picks with a public track record. Every pick logged before kickoff. Free Telegram channel + VIP subscription with edge detection using Pinnacle sharp lines, reverse line movement, and closing line value.",
   keywords: [
-    "AI sports picks", "sports betting tips", "blockchain verified picks",
+    "AI sports picks", "sports betting tips", "verified sports picks",
     "sharp sports betting", "Pinnacle sharp lines", "reverse line movement",
     "closing line value", "sports betting edge", "AI tipster", "verified tipster",
     "sports betting predictions", "NBA picks", "soccer predictions", "NHL picks",
     "MLB predictions", "tennis picks", "smart sports betting", "value betting",
     "expected value betting", "Telegram sports picks", "VIP sports tips",
-    "proven track record betting", "on-chain verified picks", "Polygon blockchain betting",
+    "proven track record betting", "public record sports picks", "transparent betting picks",
   ],
   authors: [{ name: "Sharkline" }],
   creator: "Sharkline",
@@ -37,16 +37,16 @@ export const metadata: Metadata = {
     locale: "en_US",
     url: "https://sharkline.vercel.app",
     siteName: "Sharkline",
-    title: "Sharkline — AI Sports Picks, Blockchain Verified",
+    title: "Sharkline — AI Sports Picks, On the Record",
     description:
-      "Every pick timestamped on-chain before kickoff. AI edge detection using Pinnacle sharp lines & reverse line movement. Free Telegram channel available.",
+      "Every pick logged before kickoff. AI edge detection using Pinnacle sharp lines & reverse line movement. Free Telegram channel available.",
     images: [{ url: "/opengraph-image", width: 1200, height: 630, alt: "Sharkline — AI Sports Picks" }],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Sharkline — AI Sports Picks, Blockchain Verified",
+    title: "Sharkline — AI Sports Picks, On the Record",
     description:
-      "Every pick timestamped on-chain before kickoff. AI edge detection with proven track record.",
+      "Every pick logged before kickoff. AI edge detection with proven track record.",
     images: ["/opengraph-image"],
     creator: "@sharkline_ai",
   },
@@ -70,7 +70,7 @@ const jsonLd = {
   "@context": "https://schema.org",
   "@type": "WebApplication",
   name: "Sharkline",
-  description: "AI-powered sports picks with blockchain-verified track record",
+  description: "AI-powered sports picks with a public track record",
   url: "https://sharkline.vercel.app",
   applicationCategory: "Sports",
   offers: {

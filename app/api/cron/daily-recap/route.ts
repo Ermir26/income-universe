@@ -5,6 +5,7 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { getSystemStatus } from '@/lib/method/system-status';
 import { isBankrollTrackingActive } from '@/lib/tipster/bankroll-launch';
+import { BRAND } from '@/lib/tipster/brand';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
@@ -193,7 +194,7 @@ export async function GET(request: Request) {
 
   vipMsg += `\n${isWinDay ? '🟢 Edge found, edge hit.' : '🔴 Process was right, variance happens. The edge plays out over weeks.'}\n\n`;
   vipMsg += `💎 Want exact staking + bankroll protection? → Shark Method\n`;
-  vipMsg += `🦈 Sharkline — on-chain before kickoff`;
+  vipMsg += BRAND.footer;
 
   // ── METHOD channel: full bankroll + balance + system status ──
   const bankrollActive = await isBankrollTrackingActive(supabase);
@@ -206,7 +207,7 @@ export async function GET(request: Request) {
     `Monthly: ${monthProfit >= 0 ? '+' : ''}${monthProfit.toFixed(1)}u\n` +
     `System: ${methodBadge}\n\n` +
     `<i>${template}</i>\n` +
-    `🦈 Sharkline — on-chain before kickoff`;
+    BRAND.footer;
 
   // Post to each channel with its own message
   if (FREE_CHANNEL_ID) await sendTelegram(freeMsg, FREE_CHANNEL_ID);

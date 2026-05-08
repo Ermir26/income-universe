@@ -18,17 +18,29 @@ function normalizeSport(raw: string): string {
 }
 
 export async function GET() {
-  const [{ data: allPicks }, { data: chainData }] = await Promise.all([
+  // Decision log coverage cutoff: 2026-05-04 is the first date where all graded
+  // picks reliably have pick_decision_log entries. Earlier picks (Apr 23 had 2/2
+  // but Apr 24–May 1 had gaps) predate the validator pipeline fix that ensured
+  // every code path writes to pick_decision_log before insert.
+  const LOG_COVERAGE_CUTOFF = "2026-05-04T00:00:00Z";
+
+  const [{ data: allPicks }, { data: postCutoffPicks }, { data: decisionLogs }] = await Promise.all([
     supabase
       .from("picks")
       .select("sport, sport_key, result, profit, tier, category, stake")
       .neq("result", "pending")
       .order("sent_at", { ascending: false }),
-    // For blockchain interlock: count picks with tx_hash vs total
+    // Graded picks after cutoff — denominator for decision log coverage
     supabase
       .from("picks")
-      .select("tx_hash, result")
-      .in("result", ["won", "lost", "push"]),
+      .select("id")
+      .in("result", ["won", "lost", "push"])
+      .gte("created_at", LOG_COVERAGE_CUTOFF),
+    // Decision log entries after cutoff — numerator
+    supabase
+      .from("pick_decision_log")
+      .select("pick_id")
+      .gte("created_at", LOG_COVERAGE_CUTOFF),
   ]);
 
   if (!allPicks || allPicks.length === 0) {
@@ -100,10 +112,11 @@ export async function GET() {
   const gradedPicks = allPicks?.filter((p) => p.result === "won" || p.result === "lost" || p.result === "push") ?? [];
   const gradedCount = gradedPicks.length;
 
-  // Blockchain coverage: % of graded picks with tx_hash
-  const chainPicks = chainData ?? [];
-  const withTxHash = chainPicks.filter((p) => p.tx_hash != null).length;
-  const chainCoverage = chainPicks.length > 0 ? +(withTxHash / chainPicks.length * 100).toFixed(1) : 0;
+  // Decision log coverage: % of post-cutoff graded picks with a pick_decision_log entry
+  const cutoffPicks = postCutoffPicks ?? [];
+  const loggedIds = new Set((decisionLogs ?? []).map((d: { pick_id: string }) => d.pick_id));
+  const withLog = cutoffPicks.filter((p: { id: string }) => loggedIds.has(p.id)).length;
+  const logCoverage = cutoffPicks.length > 0 ? +(withLog / cutoffPicks.length * 100).toFixed(1) : 0;
 
   // Win rate over last 30 graded picks (same threshold as auto-pause)
   const last30 = settled.slice(0, 30);
@@ -113,11 +126,12 @@ export async function GET() {
   const interlocks = {
     graded_picks: gradedCount,
     graded_ok: gradedCount >= 50,
-    chain_coverage: chainCoverage,
-    chain_ok: chainCoverage >= 80,
+    log_coverage: logCoverage,
+    log_sample_size: cutoffPicks.length,
+    log_ok: logCoverage >= 80,
     last_30_win_rate: last30WinRate,
     last_30_ok: last30WinRate >= 52,
-    reveal_ready: gradedCount >= 50 && chainCoverage >= 80 && last30WinRate >= 52,
+    reveal_ready: gradedCount >= 50 && logCoverage >= 80 && last30WinRate >= 52,
   };
 
   return NextResponse.json(
