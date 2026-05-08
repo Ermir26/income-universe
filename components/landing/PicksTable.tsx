@@ -21,6 +21,7 @@ interface Pick {
   category: string;
   bookmaker: string;
   tx_hash: string | null;
+  created_at: string;
 }
 
 const SPORT_EMOJIS: Record<string, string> = {
