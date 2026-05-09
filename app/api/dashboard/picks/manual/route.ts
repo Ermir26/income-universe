@@ -290,7 +290,6 @@ export async function POST(request: Request) {
     confidence: 0, // manual picks don't have system confidence
     event_id: body.game_id ?? null,
     tier: body.tier ?? "MANUAL",
-    category: body.tier === "FOUNDATION" ? "foundation" : "standard",
     stake: body.stake ?? 1,
   };
 

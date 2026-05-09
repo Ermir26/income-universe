@@ -339,8 +339,8 @@ CRITICAL SAFE PICK RULES:
 - The pick MUST be a moneyline favorite between -200 and -350.
 - DO NOT pick spreads, totals, or underdogs. Moneyline favorites ONLY.
 - Set "pickType": "foundation" and "pool": "safe" for ALL picks in this batch.
-- Set confidence between 70-85 for these (they are safe plays, rate them honestly).
-- Rate form_factor and situational highly (75+) when the favorite has dominant recent form.
+- Set confidence between 50-65 for these. Foundation picks are safe but LOW-EDGE — the odds already reflect the favorite's strength, so there is little mispricing. Rate honestly: a -250 favorite with no special edge is a 55, not a 75.
+- Rate factors conservatively: odds_value 40-55 (odds are efficient for heavy favorites), form_factor 55-70 (good form but priced in), h2h_factor 45-60, market_movement 45-55 (stable lines), public_vs_sharp 40-50 (public agrees), situational 50-65.
 - The goal is WINNING, not ROI. Obvious winners that most fans would agree with.
 - These exist to prove the system works, not to make money.
 - Keep analysis to 1-2 sentences. No deep breakdown needed.
