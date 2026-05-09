@@ -811,10 +811,6 @@ RULES:
 
     let html = "";
 
-    if (tier.name === "MAXIMUM") {
-      html += "🚨 <b>MAX CONFIDENCE PLAY</b> 🚨\n";
-    }
-
     if (tier.name === "FOUNDATION") {
       html += "🛡️ <b>FOUNDATION PICK</b>\n";
     }
@@ -1021,7 +1017,6 @@ Be honest with ratings. Don't inflate.`,
   const pickTypeBadge = effectivePickType === "foundation" ? "🛡️ FOUNDATION" : "💎 VALUE";
 
   let html = "";
-  if (tier.name === "MAXIMUM") html += "🚨 <b>MAX CONFIDENCE PLAY</b> 🚨\n";
   if (tier.name === "FOUNDATION") html += "🛡️ <b>FOUNDATION PICK</b>\n";
 
   html += `🦈 <b>SHARK METHOD</b> — <b>${pickTypeBadge}</b>\n`;

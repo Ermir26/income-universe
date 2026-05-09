@@ -109,7 +109,7 @@ export default function PicksTable() {
                       {pick.tier && (
                         <>
                           <span className="text-slate-600">&middot;</span>
-                          <span className={pick.tier === "MAXIMUM" ? "text-purple-400" : pick.tier === "STRONG VALUE" ? "text-orange-400" : "text-emerald-400"}>
+                          <span className={pick.tier === "FOUNDATION" ? "text-blue-400" : "text-emerald-400"}>
                             {pick.tier}
                           </span>
                         </>

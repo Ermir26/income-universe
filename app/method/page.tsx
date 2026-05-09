@@ -166,15 +166,11 @@ interface LivePickScore {
 const TIER_COLORS: Record<string, string> = {
   FOUNDATION: "text-blue-400",
   VALUE: "text-emerald-400",
-  "STRONG VALUE": "text-orange-400",
-  MAXIMUM: "text-purple-400",
 };
 
 const TIER_BG: Record<string, string> = {
   FOUNDATION: "bg-blue-500/15 border-blue-500/30",
   VALUE: "bg-emerald-500/15 border-emerald-500/30",
-  "STRONG VALUE": "bg-orange-500/15 border-orange-500/30",
-  MAXIMUM: "bg-purple-500/15 border-purple-500/30",
 };
 
 const SPORT_EMOJIS: Record<string, string> = {
@@ -584,8 +580,7 @@ export default function MethodPage() {
                 <div className="text-xs text-slate-400 space-y-1">
                   <div>Starting bankroll: 100 units = <span className="text-white font-semibold">{dollarValue(100)}</span></div>
                   <div>VALUE pick (1u): <span className="text-emerald-400 font-semibold">{dollarValue(1)}</span></div>
-                  <div>STRONG VALUE pick (1.5u): <span className="text-orange-400 font-semibold">{dollarValue(1.5)}</span></div>
-                  <div>MAXIMUM pick (2u): <span className="text-purple-400 font-semibold">{dollarValue(2)}</span></div>
+                  <div>FOUNDATION pick (1u): <span className="text-blue-400 font-semibold">{dollarValue(1)}</span></div>
                 </div>
               </div>
             </div>
@@ -1266,7 +1261,7 @@ export default function MethodPage() {
             <StepCard
               step={3}
               title="Copy Every Pick"
-              desc="Place the same bet at the same odds and stake. VALUE = 1 unit, STRONG VALUE = 1.5 units, MAXIMUM = 2 units."
+              desc="Place the same bet at the same odds and stake. VALUE = 1 unit, FOUNDATION = 1 unit."
               color="emerald"
             />
             <StepCard

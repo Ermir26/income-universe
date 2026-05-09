@@ -289,8 +289,11 @@ export async function checkChurnRisk(
 }
 
 /**
- * Win celebration — post to FREE channel on STRONG VALUE or MAXIMUM wins.
- * Called by result tracker when a high-tier pick wins.
+ * Win celebration — post to FREE channel on notable wins.
+ * Called by result tracker when a high-value pick wins.
+ * Note: STRONG VALUE and MAXIMUM tiers were deprecated 2026-05-08
+ * (tier ladder collapsed to VALUE/FOUNDATION). This now triggers on
+ * VALUE wins with scoring_score >= 70 as a proxy for notable plays.
  */
 export async function postWinCelebration(
   supabase: SupabaseClient,
@@ -306,9 +309,9 @@ export async function postWinCelebration(
   },
 ): Promise<boolean> {
   const tier = pick.category;
-  if (tier !== "STRONG VALUE" && tier !== "MAXIMUM") return false;
+  if (tier !== "VALUE") return false;
 
-  const tierEmoji = tier === "MAXIMUM" ? "💎" : "🔥";
+  const tierEmoji = "✅";
   const units = pick.profit / 100;
 
   const msg =

@@ -1302,14 +1302,12 @@ function NewPickModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
             <select value={tier} onChange={(e) => {
               const t = e.target.value;
               setTier(t);
-              const defaults: Record<string, string> = { VALUE: "1", "STRONG VALUE": "1.5", MAXIMUM: "2", FOUNDATION: "1", MANUAL: "1" };
+              const defaults: Record<string, string> = { VALUE: "1", FOUNDATION: "1", MANUAL: "1" };
               setStake(defaults[t] ?? "1");
             }}
               className="w-full rounded-lg border border-slate-700 bg-slate-800/50 px-3 py-2 text-sm text-slate-200 outline-none focus:border-blue-500">
               <option value="MANUAL">MANUAL (1u)</option>
               <option value="VALUE">VALUE (1u)</option>
-              <option value="STRONG VALUE">STRONG VALUE (1.5u)</option>
-              <option value="MAXIMUM">MAXIMUM (2u)</option>
               <option value="FOUNDATION">FOUNDATION (1u)</option>
             </select>
           </div>

@@ -320,15 +320,15 @@ export default function SharklineLanding() {
         <SectionTitle title="VIP Pick Preview" subtitle="Here&apos;s what VIP members see every day" />
         <div className="relative rounded-3xl overflow-hidden border border-white/[0.06]">
           <div className="p-6 space-y-3 blur-[6px] select-none pointer-events-none">
-            <FakePickCard sport="NBA" game="Lakers vs Celtics" pick="Lakers -3.5" odds="-110" tier="MAXIMUM" />
-            <FakePickCard sport="EPL" game="Arsenal vs Man City" pick="Over 2.5 Goals" odds="+105" tier="STRONG VALUE" />
-            <FakePickCard sport="NHL" game="Rangers vs Bruins" pick="Rangers ML" odds="+140" tier="VALUE" />
+            <FakePickCard sport="NBA" game="Lakers vs Celtics" pick="Lakers -3.5" odds="-110" tier="VALUE" />
+            <FakePickCard sport="EPL" game="Arsenal vs Man City" pick="Over 2.5 Goals" odds="+105" tier="VALUE" />
+            <FakePickCard sport="NHL" game="Rangers vs Bruins" pick="Rangers ML" odds="+140" tier="FOUNDATION" />
           </div>
           <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-t from-[#050510] via-[#050510]/60 to-transparent">
             <div className="text-center px-6">
               <div className="text-4xl mb-3">{"\u{1F512}"}</div>
               <h3 className="text-2xl font-black mb-2 text-white">Unlock VIP Picks</h3>
-              <p className="text-slate-400 mb-5 max-w-sm mx-auto">Get MAXIMUM confidence plays, full analysis cards, and payload-validated results.</p>
+              <p className="text-slate-400 mb-5 max-w-sm mx-auto">Get full analysis cards, edge plays, and payload-validated results.</p>
               <a href="#pricing" className="inline-block px-8 py-3.5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-xl font-bold hover:scale-[1.02] active:scale-[0.98] transition-transform shadow-lg shadow-purple-500/20">
                 View VIP Plans
               </a>
@@ -577,7 +577,7 @@ function EdgeCard({ step, title, desc, color, visual }: { step: number; title: s
 }
 
 function FakePickCard({ sport, game, pick, odds, tier }: { sport: string; game: string; pick: string; odds: string; tier: string }) {
-  const tierColors: Record<string, string> = { VALUE: "text-emerald-400", "STRONG VALUE": "text-orange-400", MAXIMUM: "text-purple-400" };
+  const tierColors: Record<string, string> = { VALUE: "text-emerald-400", FOUNDATION: "text-blue-400" };
   return (
     <div className="flex items-center justify-between p-4 rounded-xl bg-white/[0.04] border border-white/[0.08]">
       <div className="flex items-center gap-3">

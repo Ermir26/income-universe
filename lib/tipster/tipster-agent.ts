@@ -1027,8 +1027,6 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
       tiers: {
         FOUNDATION: finalCards.filter((c) => c.tier.name === "FOUNDATION").length,
         VALUE: finalCards.filter((c) => c.tier.name === "VALUE").length,
-        STRONG_VALUE: finalCards.filter((c) => c.tier.name === "STRONG VALUE").length,
-        MAXIMUM: finalCards.filter((c) => c.tier.name === "MAXIMUM").length,
       },
     }),
     revenue_generated: 0,

@@ -39,8 +39,7 @@ const SPORT_EMOJIS: Record<string, string> = {
 
 const TIER_CONFIG: Record<string, { emoji: string; color: string }> = {
   VALUE: { emoji: "✅", color: "text-emerald-400" },
-  "STRONG VALUE": { emoji: "🔥", color: "text-orange-400" },
-  MAXIMUM: { emoji: "💎", color: "text-purple-400" },
+  FOUNDATION: { emoji: "🛡️", color: "text-blue-400" },
 };
 
 const TELEGRAM_LINK = "https://t.me/SharklineFree";
@@ -265,7 +264,7 @@ export default function TipsterLanding() {
           <Step
             icon="💰"
             title="Win Money"
-            desc="Upgrade to unlock all sports and MAXIMUM confidence plays."
+            desc="Upgrade to unlock all sports and full analysis cards."
           />
         </div>
       </section>

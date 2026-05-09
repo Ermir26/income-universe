@@ -38,8 +38,7 @@ interface PickDetail {
 
 const TIER_STYLE: Record<string, { emoji: string; cls: string; bg: string }> = {
   VALUE: { emoji: "✅", cls: "text-emerald-400", bg: "bg-emerald-500/15 border-emerald-500/30" },
-  "STRONG VALUE": { emoji: "🔥", cls: "text-orange-400", bg: "bg-orange-500/15 border-orange-500/30" },
-  MAXIMUM: { emoji: "💎", cls: "text-purple-400", bg: "bg-purple-500/15 border-purple-500/30" },
+  FOUNDATION: { emoji: "🛡️", cls: "text-blue-400", bg: "bg-blue-500/15 border-blue-500/30" },
 };
 
 const SPORT_EMOJI: Record<string, string> = {
