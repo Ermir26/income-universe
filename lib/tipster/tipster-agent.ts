@@ -542,18 +542,43 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
   // Sort by confidence descending
   afterPauseFilter.sort((a, b) => b.confidence - a.confidence);
 
-  // Duplicate prevention — skip cards whose event_id already has a pending pick
+  // Duplicate prevention — strict rule: event_id + bet_type + side + source
+  // must be unique among non-voided picks. Includes source in the key so that
+  // picks from different origins (system_generated, partner feeds, imports)
+  // don't incorrectly reject each other as dupes. Currently all cron picks
+  // have source='system_generated', but this future-proofs the check.
   let skippedDuplicates = 0;
-  const deduped = existingEventIds
-    ? afterPauseFilter.filter((c) => {
-        if (existingEventIds.has(c.game_id)) {
-          console.log(`   ⏭️ DUPLICATE: ${c.game} (${c.game_id}) — already pending`);
-          skippedDuplicates++;
-          return false;
-        }
-        return true;
-      })
-    : crossRunDeduped;
+  let deduped = afterPauseFilter;
+  {
+    const { data: existingPicks } = await supabase
+      .from("picks")
+      .select("id, event_id, bet_type, side, source")
+      .not("status", "eq", "voided")
+      .not("event_id", "is", null);
+
+    const existingKeys = new Set(
+      (existingPicks ?? []).map((p) => `${p.event_id}|${p.bet_type}|${p.side}|${p.source}`),
+    );
+
+    deduped = afterPauseFilter.filter((c) => {
+      const betFields = parseBetFields(c.pick, c.game);
+      const key = `${c.game_id}|${betFields.bet_type}|${betFields.side}|system_generated`;
+      if (existingKeys.has(key)) {
+        const conflicting = (existingPicks ?? []).find(
+          (p) => p.event_id === c.game_id && p.bet_type === betFields.bet_type && p.side === betFields.side && p.source === "system_generated",
+        );
+        console.log(`   ⏭️ DUPLICATE: ${c.game} — ${betFields.bet_type}/${betFields.side} already exists (pick ${conflicting?.id})`);
+        supabase.from("agent_logs").insert({
+          agent_name: "sharp-picks", action: "duplicate_pick",
+          result: JSON.stringify({ game: c.game, bet_type: betFields.bet_type, side: betFields.side, source: "system_generated", conflicting_id: conflicting?.id }),
+          revenue_generated: 0,
+        }).then(() => {}, () => {});
+        skippedDuplicates++;
+        return false;
+      }
+      return true;
+    });
+  }
 
   // MAX_PICKS cap — keep top N by confidence, log skipped
   let skippedLowConfidence = 0;
