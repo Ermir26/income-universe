@@ -27,7 +27,7 @@ export async function GET() {
   const [{ data: allPicks }, { data: postCutoffPicks }, { data: decisionLogs }] = await Promise.all([
     supabase
       .from("picks")
-      .select("sport, sport_key, result, profit, tier, category, stake")
+      .select("sport, sport_key, result, profit, tier, category, stake, data_quality_flag, created_at")
       .neq("result", "pending")
       .order("sent_at", { ascending: false }),
     // Graded picks after cutoff — denominator for decision log coverage
@@ -118,8 +118,10 @@ export async function GET() {
   const withLog = cutoffPicks.filter((p: { id: string }) => loggedIds.has(p.id)).length;
   const logCoverage = cutoffPicks.length > 0 ? +(withLog / cutoffPicks.length * 100).toFixed(1) : 0;
 
-  // Win rate over last 30 graded picks (same threshold as auto-pause)
-  const last30 = settled.slice(0, 30);
+  // Win rate over last 30 payload-validated picks (honesty filter)
+  // Excludes source_unverifiable picks and pre-parser-fix picks (< 2026-04-23)
+  const honest = settled.filter((p) => p.data_quality_flag !== "source_unverifiable" && new Date(p.created_at) >= new Date("2026-04-23"));
+  const last30 = honest.slice(0, 30);
   const last30Wins = last30.filter((p) => p.result === "won").length;
   const last30WinRate = last30.length > 0 ? +(last30Wins / last30.length * 100).toFixed(1) : 0;
 

@@ -36,7 +36,7 @@ export async function GET() {
     // ─── All settled picks (for stats) ───
     const { data: settledPicks } = await supabase
       .from("picks")
-      .select("result, profit, sport, sport_key, sent_at")
+      .select("result, profit, sport, sport_key, sent_at, data_quality_flag, created_at")
       .not("result", "in", "(pending,void)")
       .order("sent_at", { ascending: false });
 
@@ -123,7 +123,9 @@ export async function GET() {
     const withLog = cutoffPicksList.filter((p: { id: string }) => loggedIds.has(p.id)).length;
     const logCoverage = cutoffPicksList.length > 0 ? +(withLog / cutoffPicksList.length * 100).toFixed(1) : 0;
 
-    const last30 = wl.slice(0, 30);
+    // Honesty filter for last_30_win_rate: exclude source_unverifiable and pre-parser-fix picks
+    const honest = wl.filter((p) => p.data_quality_flag !== "source_unverifiable" && new Date(p.created_at) >= new Date("2026-04-23"));
+    const last30 = honest.slice(0, 30);
     const last30Wins = last30.filter((p) => p.result === "won").length;
     const last30WinRate = last30.length > 0 ? +(last30Wins / last30.length * 100).toFixed(1) : 0;
 
