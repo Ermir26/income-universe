@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { verifySessionToken } from "@/lib/admin/auth";
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
@@ -20,6 +22,12 @@ function normalizeSport(raw: string): string {
 }
 
 export async function GET() {
+  const cookieStore = await cookies();
+  const session = cookieStore.get("admin_session");
+  if (!session?.value || !(await verifySessionToken(session.value))) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const now = new Date();
     const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);

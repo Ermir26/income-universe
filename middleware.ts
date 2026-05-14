@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export const config = {
-  matcher: ["/dashboard/:path*"],
+  matcher: ["/dashboard/:path*", "/api/dashboard/:path*"],
 };
 
 const BASIC_AUTH_USER = process.env.DASHBOARD_BASIC_AUTH_USER ?? "admin";
