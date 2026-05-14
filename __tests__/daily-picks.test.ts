@@ -70,9 +70,11 @@ vi.mock('@/lib/tipster/bankroll-launch', () => ({
 // Suppress fetch calls (sendVip uses global fetch)
 vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
 
-function makeRequest(secret?: string): Request {
+function makeRequest(secret?: string, opts?: { noAuth?: boolean }): Request {
   const headers: Record<string, string> = {};
   if (secret) headers['authorization'] = `Bearer ${secret}`;
+  // Simulate Vercel cron user-agent unless explicitly testing without auth
+  if (!opts?.noAuth) headers['user-agent'] = 'vercel-cron/1.0';
   return new Request('http://localhost/api/cron/daily-picks', { headers });
 }
 
@@ -85,6 +87,13 @@ describe('daily-picks cron', () => {
     // Reset env
     delete process.env.TIPSTER_ENABLED;
     process.env.CRON_SECRET = '';
+  });
+
+  it('rejects unauthenticated requests with 401', async () => {
+    const { GET } = await import('@/app/api/cron/daily-picks/route');
+    const res = await GET(makeRequest(undefined, { noAuth: true }));
+    expect(res.status).toBe(401);
+    expect(mockRunTipster).not.toHaveBeenCalled();
   });
 
   it('caps picks at MAX_PICKS_PER_DAY (5)', async () => {

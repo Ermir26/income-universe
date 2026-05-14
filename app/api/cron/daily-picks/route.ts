@@ -10,12 +10,14 @@ const CRON_SECRET = process.env.CRON_SECRET ?? "";
 export const maxDuration = 120;
 
 export async function GET(request: Request) {
-  // Auth check
-  if (CRON_SECRET) {
-    const authHeader = request.headers.get("authorization");
-    if (authHeader !== `Bearer ${CRON_SECRET}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  // Auth: require Bearer CRON_SECRET or Vercel's built-in cron user-agent
+  const authHeader = request.headers.get("authorization");
+  const ua = request.headers.get("user-agent") ?? "";
+  const isVercelCron = ua.startsWith("vercel-cron/");
+  const isValidBearer = CRON_SECRET && authHeader === `Bearer ${CRON_SECRET}`;
+
+  if (!isVercelCron && !isValidBearer) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   try {
