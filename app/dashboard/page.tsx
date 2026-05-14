@@ -732,10 +732,74 @@ function ControlsTab({ configs, onToggle, onTriggerCron, cronLoading }: {
 // ── Health Tab ──
 
 function HealthTab({ health, loading }: { health: HealthData | null; loading: boolean }) {
+  const [runState, setRunState] = useState<"idle" | "confirm" | "running">("idle");
+  const [runResult, setRunResult] = useState<Record<string, unknown> | null>(null);
+
+  const handleRunPicks = async () => {
+    setRunState("running");
+    setRunResult(null);
+    try {
+      const res = await fetch("/api/dashboard/run-picks", { method: "POST" });
+      const data = await res.json();
+      setRunResult(data);
+    } catch (err) {
+      setRunResult({ error: (err as Error).message });
+    } finally {
+      setRunState("idle");
+    }
+  };
+
   if (loading || !health) return <p className="text-sm text-slate-500 py-12 text-center">{loading ? "Loading health..." : "No data"}</p>;
 
   return (
     <div className="space-y-6">
+      {/* Run Daily Picks Now */}
+      <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-5">
+        <h3 className="text-sm font-medium text-slate-300 mb-3">Manual Pick Generation</h3>
+        {runState === "confirm" ? (
+          <div className="flex items-center gap-3">
+            <p className="text-xs text-amber-400 flex-1">This will generate new picks. Proceed?</p>
+            <button onClick={handleRunPicks} className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-colors">
+              Yes, Run Now
+            </button>
+            <button onClick={() => setRunState("idle")} className="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs font-semibold transition-colors">
+              Cancel
+            </button>
+          </div>
+        ) : runState === "running" ? (
+          <div className="flex items-center gap-2 text-xs text-slate-400">
+            <svg className="w-4 h-4 animate-spin text-indigo-400" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            Running pick generation...
+          </div>
+        ) : (
+          <button onClick={() => setRunState("confirm")} className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition-colors">
+            Run Daily Picks Now
+          </button>
+        )}
+        {runResult && (
+          <div className={`mt-3 rounded-lg border px-3 py-2 text-xs ${runResult.error ? "border-red-500/30 bg-red-500/10 text-red-400" : runResult.skipped ? "border-amber-500/30 bg-amber-500/10 text-amber-400" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"}`}>
+            {runResult.error ? (
+              <p>Error: {String(runResult.error)}</p>
+            ) : runResult.skipped ? (
+              <p>Skipped: {String(runResult.skipped)} (kill switch is on)</p>
+            ) : (
+              <div className="space-y-1">
+                <p>Generated: {String(runResult.generated ?? 0)} picks</p>
+                {(runResult.posted_free != null || runResult.posted_vip != null) && (
+                  <p>Posted: {String(runResult.posted_free ?? 0)} free, {String(runResult.posted_vip ?? 0)} VIP</p>
+                )}
+                {Array.isArray(runResult.errors) && runResult.errors.length > 0 && (
+                  <p className="text-red-400">Errors: {runResult.errors.length}</p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Last cron */}
       <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-5">
         <h3 className="text-sm font-medium text-slate-300 mb-3">Last Cron Run</h3>
