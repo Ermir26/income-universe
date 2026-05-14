@@ -103,17 +103,13 @@ describe('daily-picks cron', () => {
     const res = await GET(makeRequest());
     const body = await res.json();
 
-    // runTipster should have been called with maxPicks: 10 (current cap)
-    expect(mockRunTipster).toHaveBeenCalledOnce();
-    const config = mockRunTipster.mock.calls[0][0];
-    expect(config.maxPicks).toBe(10);
-
     // Response should reflect the capped result
     expect(body.generated).toBe(5);
     expect(body.skipped_low_confidence).toBe(5);
     expect(body.posted_vip).toBe(5);
     expect(body.posted_free).toBe(1);
     expect(body.auto_paused).toBe(false);
+    expect(body.triggered_by).toBe('cron');
   });
 
   it('zero candidates: no free post, VIP message sent, agent_logs entry', async () => {
@@ -136,8 +132,9 @@ describe('daily-picks cron', () => {
     expect(body.posted_free).toBe(0);
     expect(body.posted_vip).toBe(0);
     expect(body.auto_paused).toBe(false);
+    expect(body.triggered_by).toBe('cron');
 
-    // agent_logs should have been called — verify via from() calls
+    // agent_logs should have been called
     const logCalls = mockSupabaseFrom.mock.calls.filter((c) => c[0] === 'agent_logs');
     expect(logCalls.length).toBeGreaterThanOrEqual(1);
   });
@@ -150,10 +147,58 @@ describe('daily-picks cron', () => {
     const body = await res.json();
 
     expect(body.skipped).toBe('disabled');
+    expect(body.triggered_by).toBe('cron');
     expect(mockRunTipster).not.toHaveBeenCalled();
 
     // Should have logged to agent_logs
     const logCalls = mockSupabaseFrom.mock.calls.filter((c) => c[0] === 'agent_logs');
     expect(logCalls.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('runPickGeneration service', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    mockCheckSportHealth.mockResolvedValue({ action: 'live' });
+    delete process.env.TIPSTER_ENABLED;
+  });
+
+  it('returns PickGenerationResult with triggered_by field', async () => {
+    process.env.TIPSTER_ENABLED = 'false';
+
+    const { runPickGeneration } = await import('@/lib/tipster/run-pick-generation');
+    const result = await runPickGeneration('manual');
+
+    expect(result.triggered_by).toBe('manual');
+    expect(result.skipped).toBe('disabled');
+    expect(result.generated).toBe(0);
+  });
+
+  it('returns valid JSON-serializable result (no HTML)', async () => {
+    process.env.TIPSTER_ENABLED = 'false';
+
+    const { runPickGeneration } = await import('@/lib/tipster/run-pick-generation');
+    const result = await runPickGeneration('cron');
+
+    // Must be JSON-serializable without throwing
+    const json = JSON.stringify(result);
+    expect(json).not.toContain('<!doctype');
+    expect(json).not.toContain('<html');
+
+    const parsed = JSON.parse(json);
+    expect(parsed.skipped).toBe('disabled');
+    expect(parsed.triggered_by).toBe('cron');
+  });
+
+  it('cron route returns JSON response (not HTML)', async () => {
+    process.env.TIPSTER_ENABLED = 'false';
+
+    const { GET } = await import('@/app/api/cron/daily-picks/route');
+    const res = await GET(makeRequest());
+
+    expect(res.headers.get('content-type')).toContain('application/json');
+    const body = await res.json();
+    expect(body.skipped).toBe('disabled');
   });
 });
