@@ -725,24 +725,39 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
   }
 
   // ── Determine channel eligibility for each pick ──
-  // Sort by confidence DESC (already sorted, but ensure)
-  finalCards.sort((a, b) => b.confidence - a.confidence);
-  const liveCards = finalCards.filter((c) => !isPaperSport(c));
-
-  // Tier allocation rule (Phase 3.1):
-  //   Top 2 non-underdog picks by confidence → "free,vip,method" (all channels)
-  //   Picks 3-N (non-underdog)               → "vip,method"      (VIP + Method only)
-  //   Underdog alerts (high volatility) route to VIP only by product decision
-  //     — see PM thread 2026-04-26.
+  // Routing rule (2026-05-08 product decision):
+  //   Candidate set: tier='VALUE' AND scoring_score >= 65
+  //     → ALL candidates route to VIP + Method
+  //     → Top 2 by edge_percentage DESC, scoring_score DESC also route to FREE
+  //   FOUNDATION picks: no auto-routing — land as drafts, require operator approval
+  //   Underdog alerts: VIP only (unchanged, per PM thread 2026-04-26)
   //
   // No volume cap — every pick that passes the validator lands as a draft.
   // Operator controls volume via approve/reject in the dashboard.
-  const FREE_SLOTS = 2; // top N picks go to FREE + VIP + Method
-  const METHOD_MIN_CONFIDENCE = 70;
+  const FREE_SLOTS = 2; // top N VALUE candidates also go to FREE
 
-  // Build ranked channel assignments — underdog alerts don't count toward ranking
-  const nonUnderdogLive = liveCards.filter((c) => !c.is_underdog_alert);
+  const liveCards = finalCards.filter((c) => !isPaperSport(c));
+
+  // Separate underdog alerts (always VIP-only) from regular picks
   const underdogLive = liveCards.filter((c) => c.is_underdog_alert);
+  const nonUnderdogLive = liveCards.filter((c) => !c.is_underdog_alert);
+
+  // Candidate set: VALUE tier + scoring_score >= 65
+  const valueCandidates = nonUnderdogLive.filter(
+    (c) => c.tier.name === "VALUE" && c.confidence >= 65,
+  );
+  // FOUNDATION picks and VALUE picks with score < 65 → drafts only (no channel)
+  const draftOnly = nonUnderdogLive.filter(
+    (c) => c.tier.name === "FOUNDATION" || c.confidence < 65,
+  );
+
+  // Sort VALUE candidates: edge_percentage DESC, scoring_score DESC
+  valueCandidates.sort((a, b) => {
+    const edgeA = a.scoring.breakdown.odds_value ?? 0;
+    const edgeB = b.scoring.breakdown.odds_value ?? 0;
+    if (edgeB !== edgeA) return edgeB - edgeA;
+    return b.confidence - a.confidence;
+  });
 
   // Method channel guard: unconfigured or duplicates VIP/FREE → strip from routing
   const methodMisconfigured = !methodChannelId
@@ -763,10 +778,13 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
 
   // Pre-compute channel by card game_id for the insert loop
   const channelByGameId = new Map<string, string>();
-  nonUnderdogLive.forEach((card, idx) => {
+  valueCandidates.forEach((card, idx) => {
     let ch = idx < FREE_SLOTS ? "free,vip,method" : "vip,method";
     if (methodMisconfigured) ch = ch.replace(",method", "");
     channelByGameId.set(card.game_id, ch);
+  });
+  draftOnly.forEach((card) => {
+    channelByGameId.set(card.game_id, "draft");
   });
   underdogLive.forEach((card) => {
     channelByGameId.set(card.game_id, "vip");
@@ -814,7 +832,7 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
           scoring_factors: card.scoring.factors, scoring_weights: card.scoring.weights,
           scoring_score: card.confidence, reasoning: card.analysis,
           channel: "paper", status: "pending", sent_at: new Date().toISOString(),
-          method_eligible: card.confidence >= METHOD_MIN_CONFIDENCE,
+          method_eligible: false, // paper picks never route to Method
           game_time: card.game_time, event_id: card.game_id,
           pool: card.pool,
           is_sharpest: card.is_sharpest,
@@ -894,8 +912,8 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
       // Blockchain timestamp before saving
       const chain = await blockchainTimestamp(card);
 
-      // Channel assignment — rank-based (top 2 → all channels, rest → VIP+Method)
-      const channel = channelByGameId.get(card.game_id) ?? "vip,method";
+      // Channel assignment — tier+score gated (2026-05-08 routing rule)
+      const channel = channelByGameId.get(card.game_id) ?? "draft";
 
       // Insert as DRAFT — admin must approve before publishing
       const { data: row } = await supabase.from("picks").insert({
@@ -905,7 +923,7 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
         scoring_factors: card.scoring.factors, scoring_weights: card.scoring.weights,
         scoring_score: card.confidence, reasoning: card.analysis,
         channel, status: "draft", sent_at: new Date().toISOString(),
-        method_eligible: card.confidence >= METHOD_MIN_CONFIDENCE || card.tier.name === "FOUNDATION",
+        method_eligible: channel.includes("method"),
         game_time: card.game_time, event_id: card.game_id,
         pool: card.pool,
         is_sharpest: card.is_sharpest,
