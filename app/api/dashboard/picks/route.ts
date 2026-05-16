@@ -26,7 +26,7 @@ export async function GET(request: NextRequest) {
   let query = supabase
     .from("picks")
     .select(
-      "id, game, pick, odds, bookmaker, confidence, status, result, created_at, sport, league, line, side, bet_type, channel, profit, tier",
+      "id, game, pick, odds, bookmaker, confidence, status, result, created_at, sport, league, line, side, bet_type, channel, profit, tier, game_time",
     )
     .gte("created_at", thirtyDaysAgo.toISOString())
     .order("created_at", { ascending: false });

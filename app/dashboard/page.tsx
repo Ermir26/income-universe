@@ -109,6 +109,7 @@ const STATUS_COLORS: Record<string, string> = {
   published: "bg-green-500/20 text-green-300 border-green-500/30",
   approved: "bg-green-500/20 text-green-300 border-green-500/30",
   rejected: "bg-red-500/20 text-red-300 border-red-500/30",
+  needs_manual_review: "bg-orange-500/20 text-orange-300 border-orange-500/30",
   settled: "bg-slate-500/20 text-slate-300 border-slate-500/30",
   won: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
   lost: "bg-red-500/20 text-red-300 border-red-500/30",
@@ -591,10 +592,13 @@ function DraftCard({ draft, onApprove, onReject, onSave, onRefreshDrafts }: {
 
 const VOIDABLE_STATUSES = new Set(["draft", "pending", "approved", "published"]);
 
+const SETTLEABLE_STATUSES = new Set(["pending", "needs_manual_review"]);
+
 function HistoryRow({ pick, onVoided }: { pick: Pick; onVoided: () => void }) {
   const [showVoidModal, setShowVoidModal] = useState(false);
   const [voidReason, setVoidReason] = useState("");
   const [voiding, setVoiding] = useState(false);
+  const [settling, setSettling] = useState<string | null>(null);
 
   async function handleVoid() {
     if (!voidReason.trim()) return;
@@ -619,7 +623,29 @@ function HistoryRow({ pick, onVoided }: { pick: Pick; onVoided: () => void }) {
     }
   }
 
+  async function handleSettle(result: "won" | "lost" | "push") {
+    setSettling(result);
+    try {
+      const res = await fetch(`/api/dashboard/picks/${pick.id}/settle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ result }),
+      });
+      if (res.ok) {
+        onVoided(); // refresh list
+      } else {
+        const data = await res.json();
+        alert(data.error ?? "Settlement failed");
+      }
+    } catch {
+      alert("Network error");
+    } finally {
+      setSettling(null);
+    }
+  }
+
   const canVoid = VOIDABLE_STATUSES.has(pick.status);
+  const canSettle = SETTLEABLE_STATUSES.has(pick.status) && pick.game_time && new Date(pick.game_time) < new Date();
 
   return (
     <>
@@ -633,12 +659,30 @@ function HistoryRow({ pick, onVoided }: { pick: Pick; onVoided: () => void }) {
         <td className="px-3 py-3 text-xs">{pick.result ? <StatusBadge status={pick.result} /> : <span className="text-slate-500">{"\u2014"}</span>}</td>
         <td className="px-3 py-3 text-xs text-slate-400">{pick.created_at ? new Date(pick.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "\u2014"}</td>
         <td className="px-3 py-3 text-xs">
-          {canVoid && (
-            <button onClick={() => setShowVoidModal(true)}
-              className="rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-[10px] text-red-400 hover:bg-red-500/20 transition-colors">
-              Void
-            </button>
-          )}
+          <div className="flex gap-1">
+            {canSettle && (
+              <>
+                <button onClick={() => handleSettle("won")} disabled={!!settling}
+                  className="rounded border border-green-500/30 bg-green-500/10 px-2 py-1 text-[10px] text-green-400 hover:bg-green-500/20 transition-colors disabled:opacity-50">
+                  {settling === "won" ? "..." : "W"}
+                </button>
+                <button onClick={() => handleSettle("lost")} disabled={!!settling}
+                  className="rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-[10px] text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-50">
+                  {settling === "lost" ? "..." : "L"}
+                </button>
+                <button onClick={() => handleSettle("push")} disabled={!!settling}
+                  className="rounded border border-slate-500/30 bg-slate-500/10 px-2 py-1 text-[10px] text-slate-400 hover:bg-slate-500/20 transition-colors disabled:opacity-50">
+                  {settling === "push" ? "..." : "P"}
+                </button>
+              </>
+            )}
+            {canVoid && (
+              <button onClick={() => setShowVoidModal(true)}
+                className="rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-[10px] text-red-400 hover:bg-red-500/20 transition-colors">
+                Void
+              </button>
+            )}
+          </div>
         </td>
       </tr>
       {showVoidModal && (
@@ -1470,7 +1514,7 @@ function NewPickModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
 // ── Main Dashboard ──
 
 type Tab = "drafts" | "history" | "controls" | "health" | "live-log";
-const STATUS_FILTERS = ["all", "draft", "pending", "published", "approved", "rejected", "settled"];
+const STATUS_FILTERS = ["all", "draft", "pending", "needs_manual_review", "published", "approved", "rejected", "settled"];
 
 export default function AdminDashboard() {
   const router = useRouter();
