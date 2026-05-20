@@ -66,6 +66,7 @@ export interface AnalysisCard {
   is_underdog_alert: boolean;
   validator_corrected?: string; // "bookmaker" if auto-corrected, undefined if clean
   original_bookmaker?: string;  // original value before correction
+  below_threshold?: boolean; // true if confidence was below filter — drafted for operator review
 }
 
 interface ClaudeCandidate {
@@ -771,25 +772,16 @@ RULES:
   }
   const dedupedScored = [...bestByGame.values()];
 
-  // Determine which candidates to use
-  let selectedCandidates = dedupedScored.filter((s) => s.passedFilter);
+  // All candidates become picks — those that don't pass the filter are drafted
+  // for operator review. Assign a fallback tier to below-threshold picks.
+  const selectedCandidates = dedupedScored.map((s) => {
+    if (s.passedFilter) return s;
+    const fallbackTier = s.tier ?? { name: "VALUE" as const, emoji: "✅", stake: 1, color: "#22c55e" };
+    console.log(`   📋 DRAFT (${s.filterReason}): ${s.cand.game} — ${s.cand.pick} (conf: ${s.scoring.confidence})`);
+    return { ...s, tier: fallbackTier, filterReason: s.filterReason ?? "below_threshold" };
+  });
 
-  // Zero-pick fallback: if nothing passed, take top 2 by confidence regardless
-  if (selectedCandidates.length === 0 && dedupedScored.length > 0) {
-    console.log(`   ⚠️ ZERO-PICK FALLBACK: No candidates passed filter. Taking top 2 by confidence.`);
-    const sorted = [...dedupedScored].sort((a, b) => b.scoring.confidence - a.scoring.confidence);
-    selectedCandidates = sorted.slice(0, 2).map((s) => {
-      // Force a VALUE tier for fallback picks
-      const fallbackTier = s.tier ?? { name: "VALUE" as const, emoji: "✅", stake: 1, color: "#22c55e" };
-      return { ...s, tier: fallbackTier, passedFilter: true, filterReason: 'LOW_CONFIDENCE_FALLBACK' };
-    });
-    // Log as low confidence in agent logs (but don't change user-facing tier)
-    for (const s of selectedCandidates) {
-      console.log(`   ⚠️ LOW CONFIDENCE FALLBACK: ${s.cand.game} — ${s.cand.pick} (conf: ${s.scoring.confidence})`);
-    }
-  }
-
-  for (const { cand, game, scoring, effectivePickType, tier } of selectedCandidates) {
+  for (const { cand, game, scoring, effectivePickType, tier, passedFilter } of selectedCandidates) {
     if (!tier) continue;
 
     // Per-game league name from sport_key (NOT global)
@@ -864,6 +856,7 @@ RULES:
       is_underdog_alert: cand.is_underdog_alert === true,
       validator_corrected: correctedBookmakers.has(cand.game) ? "bookmaker" : undefined,
       original_bookmaker: correctedBookmakers.get(cand.game),
+      below_threshold: !passedFilter,
     });
   }
 

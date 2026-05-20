@@ -742,13 +742,13 @@ export async function runTipster(config: TipsterConfig): Promise<TipsterResult> 
   const underdogLive = liveCards.filter((c) => c.is_underdog_alert);
   const nonUnderdogLive = liveCards.filter((c) => !c.is_underdog_alert);
 
-  // Candidate set: VALUE tier + scoring_score >= 65
+  // Candidate set: VALUE tier + scoring_score >= 65 + passed threshold
   const valueCandidates = nonUnderdogLive.filter(
-    (c) => c.tier.name === "VALUE" && c.confidence >= 65,
+    (c) => c.tier.name === "VALUE" && c.confidence >= 65 && !c.below_threshold,
   );
-  // FOUNDATION picks and VALUE picks with score < 65 → drafts only (no channel)
+  // FOUNDATION picks, below-threshold picks, and VALUE picks with score < 65 → drafts only
   const draftOnly = nonUnderdogLive.filter(
-    (c) => c.tier.name === "FOUNDATION" || c.confidence < 65,
+    (c) => c.tier.name === "FOUNDATION" || c.confidence < 65 || c.below_threshold,
   );
 
   // Sort VALUE candidates: edge_percentage DESC, scoring_score DESC
